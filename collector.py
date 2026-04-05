@@ -1,118 +1,153 @@
 #!/usr/bin/env python3
 """
-Binance Futures BTCUSDT Trade Stream Collector
-Streams aggTrades via WebSocket, writes to CSV.
+Robust Binance Futures Trade Collector (Sandbox-Compatible)
+- Foreground only
+- Flush every 50 trades OR 5 seconds
+- Auto-reconnect on failure
+- Heartbeat every 5s
 """
 
 import websocket
 import json
 import csv
 import time
-import signal
-import sys
 import os
+import sys
+import threading
 
-# --- Config ---
-SYMBOL = "btcusdt"
-WS_URL = f"wss://fstream.binance.com/ws/{SYMBOL}@aggTrade"
+WS_URL = "wss://fstream.binance.com/ws/btcusdt@aggTrade"
 OUTPUT_DIR = "data/raw"
+MAX_BUFFER = 50
+FLUSH_INTERVAL = 5  # seconds
+HEARTBEAT_INTERVAL = 5
+RECONNECT_DELAY = 3
 
-# --- State ---
-trades_buffer = []
-total_trades = 0
+running = True
 csv_file = None
 csv_writer = None
-start_time = 0
-ws = None
+buffer = []
+total_written = 0
+output_path = ""
+last_flush_time = 0
+last_heartbeat_time = 0
 
-def get_output_path():
+
+def get_path():
     ts = time.strftime("%Y%m%d_%H%M%S")
     return os.path.join(OUTPUT_DIR, f"trades_{ts}.csv")
 
-def init_csv():
-    global csv_file, csv_writer
-    path = get_output_path()
-    csv_file = open(path, 'w', newline='')
+
+def open_csv():
+    global csv_file, csv_writer, output_path
+    output_path = get_path()
+    csv_file = open(output_path, "w", newline="")
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow([
-        'timestamp_ms', 'timestamp_utc', 'price', 'quantity',
-        'is_buyer_maker', 'agggressor_side', 'trade_id'
-    ])
+    csv_writer.writerow(["timestamp_ms", "timestamp_utc", "price", "quantity", "is_buyer_maker", "agggressor_side", "trade_id"])
     csv_file.flush()
-    return path
+
 
 def flush_buffer():
-    global trades_buffer, total_trades, csv_writer, csv_file
-    if not trades_buffer:
+    global buffer, total_written, csv_file, csv_writer, last_flush_time
+    if not buffer:
+        last_flush_time = time.time()
         return
-    for row in trades_buffer:
+    for row in buffer:
         csv_writer.writerow(row)
     csv_file.flush()
-    total_trades += len(trades_buffer)
-    trades_buffer.clear()
+    total_written += len(buffer)
+    buffer = []
+    last_flush_time = time.time()
+
+
+def maybe_flush():
+    global last_flush_time
+    now = time.time()
+    if len(buffer) >= MAX_BUFFER or (now - last_flush_time) >= FLUSH_INTERVAL:
+        flush_buffer()
+
+
+def heartbeat():
+    global last_heartbeat_time
+    now = time.time()
+    if (now - last_heartbeat_time) >= HEARTBEAT_INTERVAL:
+        rate = total_written / (now - start_time) if start_time > 0 else 0
+        print(f"  [HB] {total_written:,} trades | {rate:.0f}/s | buf={len(buffer)} | {now - start_time:.0f}s", flush=True)
+        last_heartbeat_time = now
+
 
 def on_message(ws, message):
-    global trades_buffer
+    global buffer
     try:
-        data = json.loads(message)
-        ts_ms = data['T']
-        ts_utc = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(ts_ms / 1000)) + f".{ts_ms % 1000:03d}"
-        price = data['p']
-        qty = data['q']
-        is_buyer_maker = data['m']
-        agg_side = 'SELL' if is_buyer_maker else 'BUY'
-        trade_id = data['a']
-
-        trades_buffer.append([
-            ts_ms, ts_utc, price, qty, is_buyer_maker, agg_side, trade_id
-        ])
-
-        if len(trades_buffer) >= 100:
-            flush_buffer()
-            elapsed = time.time() - start_time
-            rate = total_trades / elapsed if elapsed > 0 else 0
-            print(f"\r  Trades: {total_trades:,} | Rate: {rate:.0f}/s | Elapsed: {elapsed:.0f}s", end='', flush=True)
+        d = json.loads(message)
+        ts_ms = d["T"]
+        ts_utc = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts_ms / 1000)) + f".{ts_ms % 1000:03d}"
+        side = "SELL" if d["m"] else "BUY"
+        buffer.append([ts_ms, ts_utc, d["p"], d["q"], d["m"], side, d["a"]])
+        maybe_flush()
+        heartbeat()
     except Exception as e:
-        print(f"\n  [parse error] {e}")
+        print(f"  [ERR] parse: {e}", flush=True)
+
 
 def on_error(ws, error):
-    print(f"\n  [ws error] {error}")
+    print(f"  [ERR] ws: {error}", flush=True)
+
 
 def on_close(ws, close_status_code, close_msg):
     flush_buffer()
-    if csv_file and not csv_file.closed:
-        csv_file.close()
-    print(f"\n  [ws closed] total={total_trades:,}")
+    print(f"  [CLOSE] code={close_status_code} total={total_written}", flush=True)
+
 
 def on_open(ws):
-    print("  Connected! Streaming trades...")
+    global start_time
+    start_time = time.time()
+    print(f"  [OPEN] Connected. Writing to {output_path}", flush=True)
 
-def signal_handler(sig, frame):
-    global ws
-    print(f"\n  Shutting down...")
+
+start_time = 0
+
+
+def run_collector():
+    global running, csv_file, start_time
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    open_csv()
+
+    attempt = 0
+    while running:
+        attempt += 1
+        print(f"  [CONN] Attempt {attempt}...", flush=True)
+        start_time = time.time()
+
+        ws = websocket.WebSocketApp(
+            WS_URL,
+            on_open=on_open,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close,
+        )
+        ws.run_forever(ping_interval=20)
+
+        if not running:
+            break
+
+        # Reconnect
+        flush_buffer()
+        print(f"  [RECONNECT] Waiting {RECONNECT_DELAY}s...", flush=True)
+        time.sleep(RECONNECT_DELAY)
+
     flush_buffer()
     if csv_file and not csv_file.closed:
         csv_file.close()
-    if ws:
-        ws.close()
-    sys.exit(0)
+    print(f"  [DONE] Total: {total_written:,} trades → {output_path}", flush=True)
+
 
 if __name__ == "__main__":
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    path = init_csv()
-    print(f"  Output: {path}")
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    start_time = time.time()
-
-    ws = websocket.WebSocketApp(
-        WS_URL,
-        on_open=on_open,
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close
-    )
-
-    ws.run_forever(ping_interval=30)
+    try:
+        run_collector()
+    except KeyboardInterrupt:
+        running = False
+        flush_buffer()
+        if csv_file and not csv_file.closed:
+            csv_file.close()
+        print(f"\n  [EXIT] Ctrl+C. Total: {total_written:,} → {output_path}", flush=True)
