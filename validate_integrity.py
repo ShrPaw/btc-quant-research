@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Phase 3.5 — Data Integrity Validator
+Phase 3.5 — Data Integrity Validator (STRICT)
 
-STRICT validation of microstructure dataset.
+Validates microstructure dataset integrity.
 
 Checks:
-  1. Timestamp continuity (max gap ≤ 2s)
-  2. Trade ID continuity (strictly increasing)
-  3. Duplicate detection (must be zero)
-  4. Trade rate stability (detect freeze/burst)
-  5. Feature stability across A/B/C time segments
+  1. Timestamp continuity (monotonic, gap classification)
+  2. Trade ID continuity (within-source strict)
+  3. Duplicate detection (per-source vs cross-source)
+  4. Trade rate stability (flatlines + buffered spikes)
+  5. Feature stability (A/B/C 3-way split)
 
 Usage:
-  python3 validate_integrity.py <raw_trades.csv>
-  python3 validate_integrity.py <raw_trades.csv> --features <features.csv>
+  python3 validate_integrity.py <trades.csv>                     # single source
+  python3 validate_integrity.py <trades.csv> --merged            # merged dataset
+  python3 validate_integrity.py <trades.csv> --features <f.csv>  # with features
 
 Exit codes:
   0 = VALID
@@ -68,28 +69,83 @@ def get_feature_names(rows):
             if k not in skip and isinstance(rows[0][k], (int, float))]
 
 
+# ─── Detect Source Boundaries ────────────────────────────────────────────────
+
+def detect_source_boundaries(trades):
+    """
+    Detect source boundaries in merged data.
+
+    A source boundary is where different data collection runs meet.
+    Identified by:
+      - Large negative jumps in trade_id (REST/historical vs WebSocket ranges)
+      - Very large positive jumps (time gap between collection runs)
+
+    Does NOT flag small jumps within a continuous stream.
+    """
+    if len(trades) < 2:
+        return []
+
+    boundaries = []
+
+    # Compute typical ID step within the dataset
+    id_diffs = []
+    for i in range(1, min(len(trades), 5000)):
+        try:
+            diff = int(trades[i]["trade_id"]) - int(trades[i - 1]["trade_id"])
+            if 0 < diff < 100:  # normal step
+                id_diffs.append(diff)
+        except (ValueError, TypeError):
+            continue
+
+    # A boundary is a jump > 10000x the typical step OR a negative jump
+    for i in range(1, len(trades)):
+        try:
+            prev_id = int(trades[i - 1]["trade_id"])
+            curr_id = int(trades[i]["trade_id"])
+        except (ValueError, TypeError):
+            boundaries.append(i)
+            continue
+
+        diff = curr_id - prev_id
+
+        # Negative jump = definitely a new source
+        if diff < -1000:
+            boundaries.append(i)
+        # Very large positive jump (millions) = new source
+        elif diff > 1000000:
+            boundaries.append(i)
+
+    return boundaries
+
+
 # ─── 1. Timestamp Continuity ─────────────────────────────────────────────────
 
-def check_timestamp_continuity(trades, is_merged=False):
+def check_timestamp_continuity(trades, is_merged=False, source_boundaries=None):
     """
     Timestamps must be non-decreasing (hard rule — always).
 
-    For merged datasets:
-      - Gaps at source boundaries are EXPECTED (REST vs WebSocket time ranges)
-      - Still check monotonicity (must pass)
-      - Report gaps but don't fail on boundary gaps
+    Gap classification:
+      - At source boundary → "boundary_gap" (acceptable)
+      - Within continuous ID sequence, >2s → "natural_quiet" (acceptable)
+        BTC futures can have 2-5s quiet periods. Consecutive trade IDs
+        confirm this is the same stream, not a data loss event.
+      - Within source, gap >5s OR non-consecutive IDs → "unexpected_gap" (INVALID)
 
-    For single-source datasets:
-      - Max gap must be ≤ 2 seconds
-      - Any non-monotonic is a failure
+    For single-source: stricter — any gap >5s is unexpected.
     """
+    if source_boundaries is None:
+        source_boundaries = []
+
+    boundary_set = set(source_boundaries)
+
     errors = []
-    gaps = []
-    large_gaps = []
+    boundary_gaps = []
+    natural_quiet_gaps = []
+    unexpected_gaps = []
+    all_gaps = []
 
     for i in range(1, len(trades)):
         gap_ms = trades[i]["timestamp_ms"] - trades[i - 1]["timestamp_ms"]
-        gaps.append(gap_ms)
 
         if gap_ms < 0:
             errors.append(
@@ -100,49 +156,70 @@ def check_timestamp_continuity(trades, is_merged=False):
             if len(errors) > 5:
                 errors.append("  ... (truncated)")
                 break
-        elif gap_ms > 2000:
-            large_gaps.append((i, gap_ms))
+            continue
 
-    max_gap_ms = max(gaps) if gaps else 0
-    max_gap_s = max_gap_ms / 1000.0
+        gap_s = gap_ms / 1000.0
+        all_gaps.append(gap_s)
+
+        if gap_s > 2.0:
+            if i in boundary_set:
+                boundary_gaps.append((i, gap_s))
+            else:
+                # Check if trade IDs are consecutive (same stream, just quiet)
+                try:
+                    id_diff = int(trades[i]["trade_id"]) - int(trades[i - 1]["trade_id"])
+                except (ValueError, TypeError):
+                    id_diff = 0
+
+                if id_diff <= 2 and gap_s <= 5.0:
+                    # Consecutive IDs, gap ≤5s → natural quiet period
+                    natural_quiet_gaps.append((i, gap_s))
+                elif gap_s > 5.0:
+                    # >5s gap even with consecutive IDs → suspicious
+                    unexpected_gaps.append((i, gap_s))
+                elif id_diff > 2:
+                    # Non-consecutive IDs + gap → possible data loss
+                    unexpected_gaps.append((i, gap_s))
+
+    max_gap_s = max(all_gaps) if all_gaps else 0
     monotonic_ok = len(errors) == 0
 
-    if is_merged:
-        # For merged data: pass if monotonic (gaps at boundaries are expected)
-        passed = monotonic_ok
-    else:
-        # For single-source: pass if monotonic AND max gap ≤ 2s
-        passed = monotonic_ok and max_gap_s <= 2.0
+    # Hard rule: ANY unexpected_gap → INVALID
+    passed = monotonic_ok and len(unexpected_gaps) == 0
 
     return {
         "passed": passed,
         "max_gap_s": round(max_gap_s, 3),
-        "gaps_over_2s": len(large_gaps),
-        "large_gaps": [(idx, round(gap / 1000, 2)) for idx, gap in large_gaps[:5]],
+        "boundary_gaps": [(idx, round(gap, 2)) for idx, gap in boundary_gaps],
+        "natural_quiet_gaps": [(idx, round(gap, 2)) for idx, gap in natural_quiet_gaps],
+        "unexpected_gaps": [(idx, round(gap, 2)) for idx, gap in unexpected_gaps],
         "monotonic_errors": len(errors),
         "errors": errors,
-        "is_merged": is_merged,
     }
 
 
 # ─── 2. Trade ID Continuity ─────────────────────────────────────────────────
 
-def check_trade_id_continuity(trades, is_merged=False):
+def check_trade_id_continuity(trades, source_boundaries=None):
     """
-    Trade IDs should be strictly increasing.
+    Within a single source:
+      - Trade IDs must be strictly increasing
+      - id_diff <= 0 → INVALID
+      - Large jumps → possible missing data
 
-    For merged datasets:
-      - IDs from different sources (REST vs WebSocket) have different ranges
-      - Non-monotonicity at source boundaries is EXPECTED
-      - Still check for duplicates and report gaps
-
-    For single-source datasets:
-      - Strict: non-increasing is a failure
+    Across sources:
+      - Discontinuities are expected
+      - Tagged as source_boundary
     """
-    errors = []
+    if source_boundaries is None:
+        source_boundaries = []
+
+    boundary_set = set(source_boundaries)
+
+    within_source_violations = []
     jumps = []
-    non_increasing = 0
-    source_boundaries = []
+    total_non_increasing = 0
+    source_boundary_count = 0
 
     for i in range(1, len(trades)):
         try:
@@ -152,56 +229,90 @@ def check_trade_id_continuity(trades, is_merged=False):
             continue
 
         diff = curr_id - prev_id
+
         if diff <= 0:
-            non_increasing += 1
-            # Track source boundary (large negative jump = new source)
-            if diff < -1000000:
-                source_boundaries.append(i)
-            if len(errors) < 5:
-                errors.append(
-                    f"  NON-INCREASING at index {i}: "
-                    f"id {prev_id} → {curr_id} (diff={diff})"
-                )
-        elif diff > 1:
+            total_non_increasing += 1
+            if i in boundary_set:
+                source_boundary_count += 1
+            else:
+                # Within-source non-increasing = INVALID
+                within_source_violations.append(i)
+                if len(within_source_violations) <= 5:
+                    try:
+                        print(f"     ⚠ index {i}: id {prev_id} → {curr_id} (diff={diff})")
+                    except:
+                        pass
+        elif diff > 1 and i not in boundary_set:
             jumps.append(diff)
 
-    if is_merged:
-        # For merged data: only fail if there are non-boundary non-increasing IDs
-        # (i.e., non-increasing within a source, not just at source boundaries)
-        # Large negative jumps are source boundaries (expected)
-        passed = True  # trade IDs are source-dependent in merged data
-    else:
-        passed = non_increasing == 0
+    passed = len(within_source_violations) == 0
 
     return {
         "passed": passed,
-        "non_increasing_count": non_increasing,
-        "source_boundaries": len(source_boundaries),
+        "total_non_increasing": total_non_increasing,
+        "source_boundary_count": source_boundary_count,
+        "within_source_violations": len(within_source_violations),
         "jump_count": len(jumps),
         "max_jump": max(jumps) if jumps else 0,
         "mean_jump": round(sum(jumps) / len(jumps), 1) if jumps else 0,
-        "errors": errors,
-        "is_merged": is_merged,
     }
 
 
 # ─── 3. Duplicate Detection ─────────────────────────────────────────────────
 
-def check_duplicates(trades):
+def check_duplicates(trades, source_boundaries=None):
     """
-    Duplicates by trade_id must be exactly zero.
-    """
-    ids = [t["trade_id"] for t in trades]
-    id_counts = Counter(ids)
-    duplicates = {k: v for k, v in id_counts.items() if v > 1}
-    dup_count = sum(v - 1 for v in duplicates.values())
+    Within a single source:
+      - Duplicates by trade_id MUST equal 0
 
-    passed = dup_count == 0
+    Across sources:
+      - Minor duplication tolerated (real trades can share timestamps)
+      - Must be measured and reported
+
+    We detect source segments based on boundaries and check per-segment.
+    """
+    if source_boundaries is None:
+        source_boundaries = []
+
+    # Build source segments
+    segments = []
+    start = 0
+    for b in sorted(source_boundaries):
+        segments.append((start, b))
+        start = b
+    segments.append((start, len(trades)))
+
+    # Check duplicates per segment (within-source)
+    within_source_dup_count = 0
+    within_source_dup_ids = []
+
+    for seg_start, seg_end in segments:
+        seg_ids = [trades[i]["trade_id"] for i in range(seg_start, seg_end)]
+        id_counts = Counter(seg_ids)
+        seg_dups = {k: v for k, v in id_counts.items() if v > 1}
+        seg_dup_count = sum(v - 1 for v in seg_dups.values())
+        within_source_dup_count += seg_dup_count
+        if seg_dups and len(within_source_dup_ids) < 5:
+            within_source_dup_ids.extend(list(seg_dups.keys())[:5 - len(within_source_dup_ids)])
+
+    # Cross-source duplicates (full dataset)
+    all_ids = [t["trade_id"] for t in trades]
+    all_counts = Counter(all_ids)
+    cross_source_dups = {k: v for k, v in all_counts.items() if v > 1}
+    cross_source_dup_count = sum(v - 1 for v in cross_source_dups.values())
+
+    # Cross-source only = total - within-source
+    cross_only = cross_source_dup_count - within_source_dup_count
+
+    passed = within_source_dup_count == 0
 
     return {
         "passed": passed,
-        "duplicate_count": dup_count,
-        "duplicate_ids": list(duplicates.keys())[:5],
+        "within_source_duplicates": within_source_dup_count,
+        "cross_source_duplicates": max(0, cross_only),
+        "total_duplicates": cross_source_dup_count,
+        "duplicate_ids": within_source_dup_ids[:5],
+        "num_sources": len(segments),
     }
 
 
@@ -210,12 +321,16 @@ def check_duplicates(trades):
 def check_trade_rate(trades):
     """
     Compute trades-per-second distribution.
-    Detect flatlines (collector freeze) and abnormal spikes.
+
+    Detect:
+      1. Flatlines (collector freeze)
+      2. Spikes (reconnect bursts)
+      3. Buffered data (many trades share identical timestamps)
     """
     if len(trades) < 2:
         return {"passed": True, "rates": {}, "anomalies": []}
 
-    # Count trades per second
+    # ── Per-second counts ──
     sec_counts = Counter()
     for t in trades:
         sec = t["timestamp_ms"] // 1000
@@ -230,7 +345,7 @@ def check_trade_rate(trades):
 
     anomalies = []
 
-    # Flatline: consecutive seconds with zero or 1 trade
+    # ── Flatline: consecutive seconds with ≤1 trade ──
     sorted_secs = sorted(sec_counts.keys())
     flatline_runs = []
     current_run = 1
@@ -245,13 +360,28 @@ def check_trade_rate(trades):
         flatline_runs.append(current_run)
 
     if flatline_runs:
-        anomalies.append(f"Flatline: {max(flatline_runs)} consecutive seconds with ≤1 trade")
+        anomalies.append(f"FLATLINE: {max(flatline_runs)} consecutive seconds with ≤1 trade (collector freeze?)")
 
-    # Spike: any second with rate > mean + 5*std
+    # ── Spike: any second with rate > mean + 5*std ──
     spike_threshold = mean_r + 5 * std_r
-    spikes = [r for r in rates if r > spike_threshold]
-    if spikes:
-        anomalies.append(f"Spikes: {len(spikes)} seconds above {spike_threshold:.0f} trades/s (max={max(spikes)})")
+    spike_secs = [(sec, cnt) for sec, cnt in sec_counts.items() if cnt > spike_threshold]
+    if spike_secs:
+        max_spike = max(cnt for _, cnt in spike_secs)
+        anomalies.append(f"SPIKE: {len(spike_secs)} seconds above {spike_threshold:.0f}/s (max={max_spike})")
+
+    # ── Buffered data detection ──
+    # Check if many trades share identical timestamps (ms-level)
+    ts_counts = Counter(t["timestamp_ms"] for t in trades)
+    max_same_ts = max(ts_counts.values())
+    ts_with_multiple = sum(1 for c in ts_counts.values() if c > 1)
+    ts_multiple_pct = ts_with_multiple / len(ts_counts) * 100 if ts_counts else 0
+
+    # If >30% of timestamps have multiple trades AND max per ts > 20, likely buffered
+    if ts_multiple_pct > 30 and max_same_ts > 20:
+        anomalies.append(
+            f"BUFFERED: {ts_multiple_pct:.0f}% of timestamps have multiple trades "
+            f"(max {max_same_ts} per ms) — likely NOT real-time flow"
+        )
 
     passed = len(flatline_runs) == 0
 
@@ -262,11 +392,13 @@ def check_trade_rate(trades):
         "min_trades_per_s": min_r,
         "max_trades_per_s": max_r,
         "total_seconds": n,
+        "max_same_timestamp": max_same_ts,
+        "pct_multi_timestamp": round(ts_multiple_pct, 1),
         "anomalies": anomalies,
     }
 
 
-# ─── 5. Feature Stability (A/B/C Segments) ──────────────────────────────────
+# ─── 5. Feature Stability (A/B/C) ───────────────────────────────────────────
 
 def percentile(sorted_vals, p):
     """Percentile from sorted list."""
@@ -278,11 +410,11 @@ def percentile(sorted_vals, p):
 
 def check_feature_stability(features, feature_names):
     """
-    Split into 3 equal time segments (A/B/C).
+    Split into 3 equal time segments (A | B | C).
     Compute p5, p50, p95 per segment.
-    Measure max deviation across segments.
+    Max deviation = largest |segment_median - overall_median| / std
 
-    Deviation = |segment_val - mean_val| / std_val
+    Track if deviation is decreasing (convergence) or stable (non-stationarity).
     """
     n = len(features)
     if n < 30:
@@ -309,30 +441,41 @@ def check_feature_stability(features, feature_names):
         )
 
         segment_stats = {}
+        segment_deviations = []
         for seg_name, seg_rows in segments.items():
             seg_vals = [r[fname] for r in seg_rows]
             seg_p5 = percentile(sorted(seg_vals), 0.05)
             seg_p50 = percentile(sorted(seg_vals), 0.50)
             seg_p95 = percentile(sorted(seg_vals), 0.95)
 
-            segment_stats[seg_name] = {
-                "p5": seg_p5, "p50": seg_p50, "p95": seg_p95
-            }
+            if overall_std > 1e-15:
+                dev = abs(seg_p50 - overall_p50) / overall_std
+            else:
+                dev = 0.0
 
-        # Max deviation: largest |segment p50 - overall p50| / std
-        if overall_std > 1e-15:
-            devs = []
-            for seg_name in ["A", "B", "C"]:
-                dev = abs(segment_stats[seg_name]["p50"] - overall_p50) / overall_std
-                devs.append(dev)
-            feat_max_dev = max(devs)
+            segment_stats[seg_name] = {
+                "p5": seg_p5, "p50": seg_p50, "p95": seg_p95, "deviation": dev
+            }
+            segment_deviations.append(dev)
+
+        feat_max_dev = max(segment_deviations)
+
+        # Trend: decreasing = convergence, stable/increasing = non-stationary
+        if len(segment_deviations) == 3:
+            if segment_deviations[2] < segment_deviations[0] * 0.7:
+                trend = "converging"
+            elif segment_deviations[2] > segment_deviations[0] * 1.3:
+                trend = "diverging"
+            else:
+                trend = "stable"
         else:
-            feat_max_dev = 0.0
+            trend = "unknown"
 
         details[fname] = {
             "overall": {"p5": overall_p5, "p50": overall_p50, "p95": overall_p95},
             "segments": segment_stats,
             "max_deviation": round(feat_max_dev, 3),
+            "trend": trend,
         }
 
         max_deviation = max(max_deviation, feat_max_dev)
@@ -362,13 +505,17 @@ def print_report(results):
     status = "✓ PASS" if r["passed"] else "✗ FAIL"
     if not r["passed"]:
         all_passed = False
-    merged_note = " (merged — boundary gaps expected)" if r.get("is_merged") else ""
-    print(f"\n  1. TIMESTAMP CONTINUITY  [{status}]{merged_note}")
-    print(f"     Max gap: {r['max_gap_s']}s (limit: 2.0s for single-source)")
-    print(f"     Gaps > 2s: {r['gaps_over_2s']}")
-    if r.get("large_gaps"):
-        for idx, gap in r["large_gaps"][:3]:
-            print(f"       index {idx}: {gap}s")
+    print(f"\n  1. TIMESTAMP CONTINUITY  [{status}]")
+    print(f"     Max gap: {r['max_gap_s']}s")
+    print(f"     Boundary gaps: {len(r['boundary_gaps'])} (acceptable)")
+    print(f"     Natural quiet gaps: {len(r.get('natural_quiet_gaps', []))} (consecutive IDs, ≤5s)")
+    print(f"     Unexpected gaps: {len(r['unexpected_gaps'])} (MUST be 0)")
+    for idx, gap in r["unexpected_gaps"][:5]:
+        print(f"       ⚠ index {idx}: {gap}s — UNEXPECTED")
+    for idx, gap in r["boundary_gaps"][:3]:
+        print(f"       boundary: index {idx}: {gap}s")
+    for idx, gap in r.get("natural_quiet_gaps", [])[:3]:
+        print(f"       quiet: index {idx}: {gap}s")
     print(f"     Monotonic errors: {r['monotonic_errors']}")
     for e in r["errors"][:3]:
         print(f"     {e}")
@@ -378,16 +525,13 @@ def print_report(results):
     status = "✓ PASS" if r["passed"] else "✗ FAIL"
     if not r["passed"]:
         all_passed = False
-    merged_note = " (merged — IDs source-dependent)" if r.get("is_merged") else ""
-    print(f"\n  2. TRADE ID CONTINUITY  [{status}]{merged_note}")
-    print(f"     Non-increasing: {r['non_increasing_count']}")
-    if r.get("source_boundaries"):
-        print(f"     Source boundaries: {r['source_boundaries']} (expected in merged data)")
-    print(f"     Jumps (id diff > 1): {r['jump_count']}")
-    print(f"     Max jump: {r['max_jump']}")
-    print(f"     Mean jump: {r['mean_jump']}")
-    for e in r["errors"][:3]:
-        print(f"     {e}")
+    print(f"\n  2. TRADE ID CONTINUITY  [{status}]")
+    print(f"     Total non-increasing: {r['total_non_increasing']}")
+    print(f"       At source boundaries: {r['source_boundary_count']} (expected)")
+    print(f"       Within source: {r['within_source_violations']} (MUST be 0)")
+    print(f"     Jumps (within source): {r['jump_count']}")
+    print(f"       Max jump: {r['max_jump']}")
+    print(f"       Mean jump: {r['mean_jump']}")
 
     # 3. Duplicates
     r = results["duplicates"]
@@ -395,9 +539,12 @@ def print_report(results):
     if not r["passed"]:
         all_passed = False
     print(f"\n  3. DUPLICATES  [{status}]")
-    print(f"     Duplicate count: {r['duplicate_count']} (must be 0)")
+    print(f"     Sources detected: {r['num_sources']}")
+    print(f"     Within-source duplicates: {r['within_source_duplicates']} (MUST be 0)")
+    print(f"     Cross-source duplicates: {r['cross_source_duplicates']} (tolerated)")
+    print(f"     Total duplicates: {r['total_duplicates']}")
     if r["duplicate_ids"]:
-        print(f"     Example IDs: {r['duplicate_ids']}")
+        print(f"     Violating IDs: {r['duplicate_ids']}")
 
     # 4. Trade rate
     r = results["trade_rate"]
@@ -410,6 +557,8 @@ def print_report(results):
     print(f"     Min:  {r['min_trades_per_s']}/s")
     print(f"     Max:  {r['max_trades_per_s']}/s")
     print(f"     Seconds covered: {r['total_seconds']}")
+    print(f"     Max trades per timestamp: {r['max_same_timestamp']}")
+    print(f"     % timestamps with multiple trades: {r['pct_multi_timestamp']}%")
     for a in r["anomalies"]:
         print(f"     ⚠ {a}")
 
@@ -426,8 +575,12 @@ def print_report(results):
         if r["unstable_features"]:
             print(f"     Unstable features:")
             for f in r["unstable_features"]:
-                dev = r["details"][f]["max_deviation"]
-                print(f"       {f}: {dev}σ")
+                d = r["details"][f]
+                print(f"       {f}: {d['max_deviation']}σ ({d['trend']})")
+        # Show all trends
+        if r.get("details"):
+            trends = Counter(d["trend"] for d in r["details"].values())
+            print(f"     Trends: {dict(trends)}")
     else:
         print(f"\n  5. FEATURE STABILITY  [SKIPPED] (no features provided)")
 
@@ -442,38 +595,35 @@ def print_report(results):
     return all_passed
 
 
-# ─── Save report as CSV ──────────────────────────────────────────────────────
+# ─── Save report ─────────────────────────────────────────────────────────────
 
 def save_report(results, output_path):
-    """Save integrity report as CSV for tracking over time."""
+    """Save integrity report as CSV."""
     rows = []
 
-    # Timestamp
     r = results["timestamp_continuity"]
-    rows.append(["timestamp_continuity", "passed", r["passed"]])
-    rows.append(["timestamp_continuity", "max_gap_s", r["max_gap_s"]])
-    rows.append(["timestamp_continuity", "gaps_over_2s", r["gaps_over_2s"]])
+    rows.append(["timestamp", "passed", r["passed"]])
+    rows.append(["timestamp", "max_gap_s", r["max_gap_s"]])
+    rows.append(["timestamp", "boundary_gaps", len(r["boundary_gaps"])])
+    rows.append(["timestamp", "unexpected_gaps", len(r["unexpected_gaps"])])
 
-    # Trade ID
     r = results["trade_id_continuity"]
-    rows.append(["trade_id_continuity", "passed", r["passed"]])
-    rows.append(["trade_id_continuity", "non_increasing", r["non_increasing_count"]])
-    rows.append(["trade_id_continuity", "jumps", r["jump_count"]])
-    rows.append(["trade_id_continuity", "max_jump", r["max_jump"]])
+    rows.append(["trade_id", "passed", r["passed"]])
+    rows.append(["trade_id", "within_source_violations", r["within_source_violations"]])
+    rows.append(["trade_id", "source_boundaries", r["source_boundary_count"]])
 
-    # Duplicates
     r = results["duplicates"]
     rows.append(["duplicates", "passed", r["passed"]])
-    rows.append(["duplicates", "count", r["duplicate_count"]])
+    rows.append(["duplicates", "within_source", r["within_source_duplicates"]])
+    rows.append(["duplicates", "cross_source", r["cross_source_duplicates"]])
 
-    # Trade rate
     r = results["trade_rate"]
     rows.append(["trade_rate", "passed", r["passed"]])
     rows.append(["trade_rate", "mean_per_s", r["mean_trades_per_s"]])
     rows.append(["trade_rate", "std_per_s", r["std_trades_per_s"]])
-    rows.append(["trade_rate", "min_per_s", r["min_trades_per_s"]])
+    rows.append(["trade_rate", "max_same_ts", r["max_same_timestamp"]])
+    rows.append(["trade_rate", "pct_multi_ts", r["pct_multi_timestamp"]])
 
-    # Feature stability
     r = results.get("feature_stability")
     if r:
         rows.append(["feature_stability", "passed", r["passed"]])
@@ -489,17 +639,19 @@ def save_report(results, output_path):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 validate_integrity.py <raw_trades.csv> [--features <features.csv>]")
+        print("Usage: python3 validate_integrity.py <trades.csv> [--merged] [--features <f.csv>]")
         sys.exit(1)
 
     trades_path = sys.argv[1]
+    is_merged = "--merged" in sys.argv
+
     features_path = None
     if "--features" in sys.argv:
         idx = sys.argv.index("--features")
         if idx + 1 < len(sys.argv):
             features_path = sys.argv[idx + 1]
 
-    # Load trades
+    # Load
     print(f"  Loading trades: {trades_path}")
     trades = load_trades(trades_path)
     print(f"  Loaded {len(trades):,} trades")
@@ -508,23 +660,32 @@ if __name__ == "__main__":
         print("  ERROR: No trades loaded.")
         sys.exit(1)
 
-    # Detect merged dataset
-    is_merged = "merged" in trades_path
-
-    # Time span
     span_ms = trades[-1]["timestamp_ms"] - trades[0]["timestamp_ms"]
     span_s = span_ms / 1000.0
     print(f"  Time span: {span_s:.0f}s ({span_s/60:.1f} min = {span_s/3600:.1f} hr)")
+    print(f"  Dataset type: {'MERGED' if is_merged else 'SINGLE SOURCE'}")
+
+    # Detect source boundaries for merged data
+    source_boundaries = []
+    if is_merged:
+        source_boundaries = detect_source_boundaries(trades)
+        print(f"  Source boundaries detected: {len(source_boundaries)}")
 
     # Run checks
     print(f"\n  Running checks...")
     results = {}
-    results["timestamp_continuity"] = check_timestamp_continuity(trades, is_merged=is_merged)
-    results["trade_id_continuity"] = check_trade_id_continuity(trades, is_merged=is_merged)
-    results["duplicates"] = check_duplicates(trades)
+
+    results["timestamp_continuity"] = check_timestamp_continuity(
+        trades, is_merged=is_merged, source_boundaries=source_boundaries
+    )
+    results["trade_id_continuity"] = check_trade_id_continuity(
+        trades, source_boundaries=source_boundaries
+    )
+    results["duplicates"] = check_duplicates(
+        trades, source_boundaries=source_boundaries
+    )
     results["trade_rate"] = check_trade_rate(trades)
 
-    # Feature stability (if provided)
     if features_path and os.path.exists(features_path):
         print(f"  Loading features: {features_path}")
         features = load_features(features_path)
@@ -532,10 +693,10 @@ if __name__ == "__main__":
         print(f"  Loaded {len(features)} rows × {len(feature_names)} features")
         results["feature_stability"] = check_feature_stability(features, feature_names)
 
-    # Print report
+    # Report
     passed = print_report(results)
 
-    # Save report
+    # Save
     output_dir = "data/processed"
     os.makedirs(output_dir, exist_ok=True)
     report_path = os.path.join(

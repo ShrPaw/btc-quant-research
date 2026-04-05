@@ -9,15 +9,14 @@ Usage:
   python3 accumulate.py --process    # Merge existing raw data + process + validate
   python3 accumulate.py --fetch      # Fetch historical batches only
 
-Pipeline:
-  1. Fetch historical trades (REST, multiple batches)
-  2. Merge all raw CSVs into single dataset (with validation log)
-  3. Run feature_engineering.py on merged data
-  4. Run validate_integrity.py
-  5. Print accumulation report
+Deduplication policy:
+  - Within SAME source: dedup by trade_id (strict)
+  - ACROSS sources: do NOT aggressively dedup
+  - Safer to allow minor duplication than remove real trades
 
-NOTE: Live collector (collector.py) should run separately in parallel.
-      Merged dataset is TEMPORARY. Raw partitioned data is source of truth.
+Storage rules:
+  - Raw data is source of truth (partitioned, append-only)
+  - Merged dataset is TEMPORARY
 """
 
 import csv
@@ -34,18 +33,9 @@ from collections import Counter
 DATA_RAW = "data/raw"
 DATA_PROC = "data/processed"
 
-# Percentiles policy: only recompute when dataset doubles or +30 min new data
-PERCENTILES_MIN_INTERVAL_S = 1800  # 30 minutes
-LAST_PERCENTILES_SIZE = 0
-LAST_PERCENTILES_TIME = 0
-
 
 def fetch_historical_batches(num_batches=50, delay_s=2):
-    """
-    Fetch multiple batches of recent trades via REST.
-    Deduplicates by trade_id.
-    Saves to data/raw/trades_hist_<timestamp>.csv
-    """
+    """Fetch multiple batches of recent trades via REST."""
     import urllib.request
 
     os.makedirs(DATA_RAW, exist_ok=True)
@@ -67,6 +57,7 @@ def fetch_historical_batches(num_batches=50, delay_s=2):
             time.sleep(delay_s)
             continue
 
+        # Within this fetch, dedup by trade_id
         new = [t for t in batch if t["id"] not in seen_ids]
         for t in new:
             seen_ids.add(t["id"])
@@ -106,82 +97,99 @@ def fetch_historical_batches(num_batches=50, delay_s=2):
 
 def merge_raw_csvs():
     """
-    Merge all raw trade CSVs into a single deduplicated dataset.
+    Merge all raw trade CSVs into a single time-sorted dataset.
 
-    Reads:  data/raw/trades_*.csv (append-only, partitioned)
-    Writes: data/raw/trades_merged.csv (TEMPORARY, not source of truth)
+    Deduplication policy:
+      - Within same source file: dedup by trade_id (strict)
+      - Across sources: concatenate, sort by timestamp
+      - Cross-source dedup: ONLY remove exact (trade_id) duplicates
+      - Do NOT use composite keys for cross-source dedup
+        (real trades can share identical timestamp/price/qty/side)
+
+    Reads:  data/raw/trades_*.csv
+    Writes: data/raw/trades_merged.csv (TEMPORARY)
 
     Rules:
-      - Deduplicates by trade_id (keeps first occurrence)
-      - Sorts by timestamp
       - Raw data NEVER overwritten
+      - Merged dataset is NOT source of truth
     """
     pattern = os.path.join(DATA_RAW, "trades_*.csv")
     files = sorted(glob.glob(pattern))
+    files = [f for f in files if "merged" not in f]
 
     if not files:
         print("  No raw trade files found.")
         return None
 
-    # Exclude merged file itself
-    files = [f for f in files if "merged" not in f]
-
     print(f"  Merging {len(files)} raw files...")
 
-    # Deduplicate by composite key: (timestamp_ms, price, quantity, aggressor_side, trade_id)
-    # Trade IDs are NOT globally monotonic across data sources (REST vs WebSocket).
-    seen_keys = set()
     all_rows = []
     total_rows_in = 0
-    duplicates_removed = 0
-    per_file = []
+    per_file_stats = []
+    global_seen_ids = set()
+    cross_source_dup_count = 0
 
     for fpath in files:
+        basename = os.path.basename(fpath)
+        file_ids = set()
+        file_rows_in = 0
+        file_rows_out = 0
+        file_within_dup = 0
+
         with open(fpath, "r") as f:
             reader = csv.DictReader(f)
-            file_count = 0
-            file_new = 0
             for row in reader:
-                file_count += 1
+                file_rows_in += 1
                 total_rows_in += 1
-                # Composite dedup key (trade_id alone is insufficient across sources)
-                key = (
-                    row["timestamp_ms"],
-                    row["price"],
-                    row["quantity"],
-                    row["agggressor_side"],
-                    row["trade_id"],
-                )
-                if key not in seen_keys:
-                    seen_keys.add(key)
-                    all_rows.append(row)
-                    file_new += 1
-                else:
-                    duplicates_removed += 1
-            per_file.append((os.path.basename(fpath), file_count, file_new))
+                tid = row["trade_id"]
 
-    # Sort by timestamp (NOT by trade_id — IDs are source-dependent)
+                # Within-source dedup by trade_id
+                if tid in file_ids:
+                    file_within_dup += 1
+                    continue
+                file_ids.add(tid)
+
+                # Cross-source: only skip if exact trade_id already seen
+                if tid in global_seen_ids:
+                    cross_source_dup_count += 1
+                    continue
+                global_seen_ids.add(tid)
+
+                all_rows.append(row)
+                file_rows_out += 1
+
+        per_file_stats.append({
+            "file": basename,
+            "rows_in": file_rows_in,
+            "rows_out": file_rows_out,
+            "within_dup": file_within_dup,
+        })
+
+    # Sort by timestamp (NOT by trade_id)
     all_rows.sort(key=lambda r: int(r["timestamp_ms"]))
 
-    # ── Merge validation log ──
+    total_dups = sum(s["within_dup"] for s in per_file_stats) + cross_source_dup_count
+
+    # ── Merge log ──
+    span_s = 0
+    if all_rows:
+        span_s = (int(all_rows[-1]["timestamp_ms"]) - int(all_rows[0]["timestamp_ms"])) / 1000
+
     print(f"\n  [MERGE]")
     print(f"  files: {len(files)}")
     print(f"  rows_in: {total_rows_in}")
     print(f"  rows_out: {len(all_rows)}")
-    print(f"  duplicates_removed: {duplicates_removed}")
-
-    if all_rows:
-        span_s = (int(all_rows[-1]["timestamp_ms"]) - int(all_rows[0]["timestamp_ms"])) / 1000
-        print(f"  time_span_seconds: {span_s:.1f}")
-    else:
-        span_s = 0
-        print(f"  time_span_seconds: 0")
+    print(f"  duplicates_removed: {total_dups}")
+    print(f"    within_source: {sum(s['within_dup'] for s in per_file_stats)}")
+    print(f"    cross_source: {cross_source_dup_count}")
+    print(f"  time_span_seconds: {span_s:.1f}")
 
     print()
-    for fname, count, new in per_file:
-        print(f"    {fname}: {count} rows → {new} new")
+    for s in per_file_stats:
+        print(f"    {s['file']}: {s['rows_in']} in → {s['rows_out']} out "
+              f"(within_dup={s['within_dup']})")
 
-    # ── Trade rate check on merged data ──
+    # ── Trade rate check ──
     if all_rows:
         sec_counts = Counter()
         for r in all_rows:
@@ -192,8 +200,15 @@ def merge_raw_csvs():
         mean_r = sum(rates) / len(rates)
         std_r = math.sqrt(sum((r - mean_r) ** 2 for r in rates) / len(rates))
 
+        # Intra-second clustering
+        ts_counts = Counter(int(r["timestamp_ms"]) for r in all_rows)
+        max_same_ts = max(ts_counts.values())
+        multi_ts = sum(1 for c in ts_counts.values() if c > 1)
+        multi_pct = multi_ts / len(ts_counts) * 100 if ts_counts else 0
+
         print(f"\n  [TRADE RATE]")
         print(f"  mean: {mean_r:.1f}/s  std: {std_r:.1f}  min: {min(rates)}  max: {max(rates)}")
+        print(f"  max_same_timestamp: {max_same_ts}  pct_multi: {multi_pct:.1f}%")
 
         # Flatline detection
         sorted_secs = sorted(sec_counts.keys())
@@ -211,6 +226,8 @@ def merge_raw_csvs():
 
         if flatline_runs:
             print(f"  ⚠ FLATLINE: {max(flatline_runs)} consecutive seconds with ≤1 trade")
+        if multi_pct > 30 and max_same_ts > 20:
+            print(f"  ⚠ BUFFERED: {multi_pct:.0f}% timestamps have multiple trades (max {max_same_ts}/ms)")
 
     # Write merged
     output_path = os.path.join(DATA_RAW, "trades_merged.csv")
@@ -222,34 +239,11 @@ def merge_raw_csvs():
         w.writeheader()
         w.writerows(all_rows)
 
-    print(f"\n  Merged: {len(all_rows):,} unique trades → {output_path}")
+    print(f"\n  Merged: {len(all_rows):,} trades → {output_path}")
     if all_rows:
         print(f"  Time span: {span_s:.0f}s ({span_s/60:.1f} min = {span_s/3600:.1f} hr)")
 
     return output_path
-
-
-def should_recompute_percentiles(current_size):
-    """
-    Percentiles policy:
-      - Recompute when dataset size doubles
-      - OR at least +30 minutes of new data
-      - Otherwise: treat as unstable, skip
-    """
-    global LAST_PERCENTILES_SIZE, LAST_PERCENTILES_TIME
-
-    now = time.time()
-
-    if LAST_PERCENTILES_SIZE == 0:
-        return True
-
-    size_doubled = current_size >= 2 * LAST_PERCENTILES_SIZE
-    time_elapsed = (now - LAST_PERCENTILES_TIME) >= PERCENTILES_MIN_INTERVAL_S
-
-    if size_doubled or time_elapsed:
-        return True
-
-    return False
 
 
 def run_feature_engineering(input_path):
@@ -268,7 +262,7 @@ def run_feature_engineering(input_path):
 def run_integrity_validation(trades_path, features_path=None):
     """Run validate_integrity.py on merged data."""
     print(f"\n  Running integrity validation...")
-    cmd = [sys.executable, "validate_integrity.py", trades_path]
+    cmd = [sys.executable, "validate_integrity.py", trades_path, "--merged"]
     if features_path and os.path.exists(features_path):
         cmd.extend(["--features", features_path])
 
@@ -338,25 +332,20 @@ if __name__ == "__main__":
                 DATA_PROC,
                 os.path.basename(merged).replace("trades_", "features_")
             )
-
             run_feature_engineering(merged)
-
             if os.path.exists(feat_path):
                 run_integrity_validation(merged, feat_path)
             else:
                 run_integrity_validation(merged)
 
     elif mode == "--full":
-        # Step 1: Fetch additional data
         print("  [1/5] Fetching historical batches...")
         fetch_historical_batches(num_batches=50)
 
-        # Step 2: Merge all raw data
         print(f"\n  [2/5] Merging raw datasets...")
         merged = merge_raw_csvs()
 
         if merged:
-            # Step 3: Feature engineering
             print(f"\n  [3/5] Feature engineering...")
             run_feature_engineering(merged)
 
@@ -365,14 +354,12 @@ if __name__ == "__main__":
                 os.path.basename(merged).replace("trades_", "features_")
             )
 
-            # Step 4: Integrity validation
             print(f"\n  [4/5] Integrity validation...")
             if os.path.exists(feat_path):
                 valid = run_integrity_validation(merged, feat_path)
             else:
                 valid = run_integrity_validation(merged)
 
-            # Step 5: Audit (only if valid)
             if valid:
                 print(f"\n  [5/5] Data audit...")
                 run_audit(feat_path)
