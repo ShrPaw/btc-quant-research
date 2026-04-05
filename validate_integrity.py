@@ -204,13 +204,20 @@ def check_timestamp_continuity(trades, is_merged=False, source_boundaries=None):
     }
 
 
-# ─── 2. Trade ID Continuity ─────────────────────────────────────────────────
+# ─── 2. Trade ID Continuity (3-tier) ─────────────────────────────────────────
 
 def check_trade_id_continuity(trades, source_boundaries=None):
     """
-    Within a single source:
-      - id_diff must ALWAYS equal 1
-      - ANY violation → INVALID
+    Within a single source, classify each id_diff:
+
+      1. id_diff == 1: normal
+      2. id_diff == 2: validate local context
+         - no timestamp gap (gap < 2s)
+         - stable trade rate (not during flatline)
+         - no reconnect pattern (no gap before)
+         IF all met → source_known_skip
+         ELSE → potential_data_loss (INVALID)
+      3. id_diff > 2: INVALID unless at known boundary
 
     Across sources:
       - discontinuities allowed ONLY if tagged as boundary
@@ -220,10 +227,18 @@ def check_trade_id_continuity(trades, source_boundaries=None):
 
     boundary_set = set(source_boundaries)
 
-    violations = []
-    total_non_increasing = 0
+    # Pre-compute per-second rates for context
+    sec_counts = Counter()
+    for t in trades:
+        sec = t["timestamp_ms"] // 1000
+        sec_counts[sec] += 1
+
+    normal_count = 0
+    source_known_skips = []
+    potential_data_loss = []
+    invalid_jumps = []
+    non_increasing = []
     source_boundary_count = 0
-    within_source_jumps = []
 
     for i in range(1, len(trades)):
         try:
@@ -234,35 +249,77 @@ def check_trade_id_continuity(trades, source_boundaries=None):
 
         diff = curr_id - prev_id
 
+        # At source boundary — expected
         if i in boundary_set:
             if diff <= 0:
                 source_boundary_count += 1
             continue
 
-        # Within source: diff must equal 1
-        # Known exception: Binance WebSocket occasionally has diff=2
-        # (trade ID skip from self-trade filtering or internal dedup)
-        if diff == 2:
-            # Source-known skip — flag but don't fail
-            continue
+        # Within source classification
+        if diff == 1:
+            normal_count += 1
 
-        if diff != 1:
-            if diff <= 0:
-                total_non_increasing += 1
-            violations.append(i)
-            if len(violations) <= 5:
-                within_source_jumps.append(
-                    f"  index {i}: id {prev_id} → {curr_id} (diff={diff})"
-                )
+        elif diff == 2:
+            # Validate local context
+            gap_ms = trades[i]["timestamp_ms"] - trades[i - 1]["timestamp_ms"]
+            gap_s = gap_ms / 1000.0
 
-    passed = len(violations) == 0
+            # Check conditions
+            no_gap = gap_s < 2.0
+
+            # Check rate stability: was there activity in prior 5 seconds?
+            prev_sec = trades[i - 1]["timestamp_ms"] // 1000
+            recent_rates = []
+            for s in range(max(0, prev_sec - 5), prev_sec):
+                if s in sec_counts:
+                    recent_rates.append(sec_counts[s])
+            stable_rate = len(recent_rates) >= 3  # had trades in 3+ of last 5 seconds
+
+            # Check reconnect pattern: was there a gap >2s just before?
+            # (look at previous pair)
+            if i >= 2:
+                prev_gap_ms = trades[i - 1]["timestamp_ms"] - trades[i - 2]["timestamp_ms"]
+                no_reconnect = prev_gap_ms < 2000
+            else:
+                no_reconnect = True
+
+            if no_gap and stable_rate and no_reconnect:
+                source_known_skips.append((i, diff, round(gap_s, 3)))
+            else:
+                reason = []
+                if not no_gap:
+                    reason.append(f"gap={gap_s:.2f}s")
+                if not stable_rate:
+                    reason.append("unstable_rate")
+                if not no_reconnect:
+                    reason.append("reconnect_pattern")
+                potential_data_loss.append((i, diff, round(gap_s, 3), ", ".join(reason)))
+
+        elif diff > 2:
+            # Invalid unless at boundary
+            gap_ms = trades[i]["timestamp_ms"] - trades[i - 1]["timestamp_ms"]
+            gap_s = gap_ms / 1000.0
+            invalid_jumps.append((i, diff, round(gap_s, 3)))
+
+        elif diff <= 0:
+            gap_ms = trades[i]["timestamp_ms"] - trades[i - 1]["timestamp_ms"]
+            gap_s = gap_ms / 1000.0
+            non_increasing.append((i, diff, round(gap_s, 3)))
+
+    # Hard rule: potential_data_loss → INVALID
+    passed = len(potential_data_loss) == 0 and len(invalid_jumps) == 0 and len(non_increasing) == 0
 
     return {
         "passed": passed,
-        "total_violations": len(violations),
-        "non_increasing": total_non_increasing,
+        "normal_count": normal_count,
+        "source_known_skips": len(source_known_skips),
+        "skip_examples": source_known_skips[:5],
+        "potential_data_loss": len(potential_data_loss),
+        "loss_examples": potential_data_loss[:5],
+        "invalid_jumps": len(invalid_jumps),
+        "invalid_examples": invalid_jumps[:5],
+        "non_increasing": len(non_increasing),
         "source_boundaries": source_boundary_count,
-        "violations": within_source_jumps,
     }
 
 
@@ -315,31 +372,48 @@ def check_duplicates(trades, source_boundaries=None):
 
 # ─── 4. Trade Rate + Spike Classification ───────────────────────────────────
 
-def classify_spike(trades, spike_sec, prev_gap_s=None):
+def classify_spike(trades, spike_sec, sec_counts):
     """
-    Classify a spike second as:
-      - rapid_burst: high clustering but NO preceding gap (real market event)
-      - buffered_spike: high clustering WITH preceding gap (collector issue)
+    Classify a spike second:
 
-    During real volatility, many trades hit at the same millisecond.
-    Binance batches these — this is real microstructure, not data corruption.
+      1. market_burst:
+         - high clustering (many trades at same ms)
+         - NO prior activity drop (trades were flowing)
+         - real volatile event
+
+      2. buffered_spike:
+         - high clustering
+         - preceded by activity drop (few/no trades in prior seconds)
+         - collector was buffering
+
+    Returns: (type, clustering_ratio)
     """
     sec_trades = [t for t in trades if t["timestamp_ms"] // 1000 == spike_sec]
     n = len(sec_trades)
 
     if n < 2:
-        return "market_spike", 0
+        return "market_burst", 0
 
     unique_ts = len(set(t["timestamp_ms"] for t in sec_trades))
     clustering_ratio = 1 - (unique_ts / n)
 
-    if clustering_ratio > 0.5:
-        if prev_gap_s is not None and prev_gap_s > 2.0:
-            return "buffered_spike", clustering_ratio
-        else:
-            return "rapid_burst", clustering_ratio
-    else:
-        return "market_spike", clustering_ratio
+    if clustering_ratio <= 0.5:
+        return "market_burst", clustering_ratio
+
+    # High clustering — check pre-spike activity
+    # Was there normal activity in the seconds before?
+    prior_secs = [spike_sec - k for k in range(1, 6)]
+    prior_rates = [sec_counts.get(s, 0) for s in prior_secs]
+
+    # If the second immediately before had ≤1 trade → possible buffer
+    if prior_rates[0] <= 1:
+        # But check if it's just a natural quiet second
+        # If the 3 seconds before that had activity, it's likely just quiet
+        if prior_rates[1] > 0 or prior_rates[2] > 0:
+            return "market_burst", clustering_ratio
+        return "buffered_spike", clustering_ratio
+
+    return "market_burst", clustering_ratio
 
 
 def check_trade_rate(trades):
@@ -364,8 +438,7 @@ def check_trade_rate(trades):
 
     anomalies = []
     buffered_spikes = []
-    rapid_bursts = []
-    market_spikes = []
+    market_bursts = []
 
     # Flatline detection
     sorted_secs = sorted(sec_counts.keys())
@@ -386,44 +459,23 @@ def check_trade_rate(trades):
 
     # Spike detection and classification
     spike_threshold = mean_r + 5 * std_r
-
-    # Pre-compute gaps before each spike second
     for sec, cnt in sec_counts.items():
         if cnt > spike_threshold:
-            # Check if there was a gap before this second
-            prev_sec = sec - 1
-            if prev_sec in sec_counts:
-                prev_gap_s = 0  # no gap, previous second had trades
-            else:
-                # Find how long since last second with trades
-                prev_gap_s = 1.0
-                for lookback in range(2, 10):
-                    if (sec - lookback) in sec_counts:
-                        prev_gap_s = lookback
-                        break
-
-            spike_type, clustering = classify_spike(trades, sec, prev_gap_s)
+            spike_type, clustering = classify_spike(trades, sec, sec_counts)
             if spike_type == "buffered_spike":
                 buffered_spikes.append((sec, cnt, round(clustering, 3)))
-            elif spike_type == "rapid_burst":
-                rapid_bursts.append((sec, cnt, round(clustering, 3)))
             else:
-                market_spikes.append((sec, cnt, round(clustering, 3)))
+                market_bursts.append((sec, cnt, round(clustering, 3)))
 
     if buffered_spikes:
         anomalies.append(
             f"BUFFERED SPIKE: {len(buffered_spikes)} seconds "
-            f"(clustered after gap — collector issue)"
+            f"(high clustering after activity drop)"
         )
-    if rapid_bursts:
+    if market_bursts:
         anomalies.append(
-            f"RAPID BURST: {len(rapid_bursts)} seconds "
-            f"(high clustering, no gap — real market event)"
-        )
-    if market_spikes:
-        anomalies.append(
-            f"MARKET SPIKE: {len(market_spikes)} seconds "
-            f"(naturally distributed, threshold={spike_threshold:.0f}/s)"
+            f"MARKET BURST: {len(market_bursts)} seconds "
+            f"(high clustering, prior activity normal)"
         )
 
     # Intra-second clustering summary
@@ -432,7 +484,7 @@ def check_trade_rate(trades):
     multi_ts = sum(1 for c in ts_counts.values() if c > 1)
     multi_pct = multi_ts / len(ts_counts) * 100 if ts_counts else 0
 
-    # Hard rule: buffered_spike → INVALID (rapid_burst is acceptable — real market)
+    # Hard rule: buffered_spike → INVALID (market_burst is acceptable)
     passed = len(flatline_runs) == 0 and len(buffered_spikes) == 0
 
     return {
@@ -445,9 +497,8 @@ def check_trade_rate(trades):
         "max_same_timestamp": max_same_ts,
         "pct_multi_timestamp": round(multi_pct, 1),
         "buffered_spikes": len(buffered_spikes),
-        "rapid_bursts": len(rapid_bursts),
-        "market_spikes": len(market_spikes),
-        "spike_examples": buffered_spikes[:3] + rapid_bursts[:3] + market_spikes[:3],
+        "market_bursts": len(market_bursts),
+        "spike_examples": buffered_spikes[:3] + market_bursts[:3],
         "anomalies": anomalies,
     }
 
@@ -629,10 +680,19 @@ def print_report(results):
     if not r["passed"]:
         all_passed = False
     print(f"\n  2. TRADE ID CONTINUITY  [{status}]")
-    print(f"     Total violations: {r['total_violations']} (MUST be 0 within source)")
-    print(f"     Source boundaries: {r['source_boundaries']} (expected)")
-    for v in r["violations"][:5]:
-        print(f"       ⚠ {v}")
+    print(f"     Normal (diff=1):        {r['normal_count']:>6}")
+    print(f"     Source-known skip (=2): {r['source_known_skips']:>6} (validated context)")
+    print(f"     Potential data loss:    {r['potential_data_loss']:>6} (MUST be 0)")
+    print(f"     Invalid jumps (>2):     {r['invalid_jumps']:>6} (MUST be 0)")
+    print(f"     Non-increasing (≤0):    {r['non_increasing']:>6} (MUST be 0)")
+    print(f"     Source boundaries:      {r['source_boundaries']:>6} (expected)")
+    for idx, diff, gap, reason in r.get("loss_examples", []):
+        print(f"       ⚠ POTENTIAL LOSS: index {idx} diff={diff} gap={gap}s ({reason})")
+        flagged.append(f"potential_data_loss at index {idx}")
+    for idx, diff, gap in r.get("invalid_examples", []):
+        print(f"       ⚠ INVALID: index {idx} diff={diff} gap={gap}s")
+    for idx, diff, gap in r.get("skip_examples", [])[:3]:
+        print(f"       skip: index {idx} diff={diff} gap={gap}s")
 
     # 3. Duplicates
     r = results["duplicates"]
@@ -658,8 +718,7 @@ def print_report(results):
     print(f"     Max per timestamp: {r['max_same_timestamp']}")
     print(f"     % multi-timestamp: {r['pct_multi_timestamp']}%")
     print(f"     Buffered spikes: {r['buffered_spikes']} (MUST be 0)")
-    print(f"     Rapid bursts:    {r['rapid_bursts']} (real market events)")
-    print(f"     Market spikes:   {r['market_spikes']} (acceptable)")
+    print(f"     Market bursts:   {r['market_bursts']} (real events, prior activity normal)")
     for a in r["anomalies"]:
         print(f"     ⚠ {a}")
 
@@ -727,8 +786,11 @@ def save_report(results, output_path):
 
     r = results["trade_id_continuity"]
     rows.append(["trade_id", "passed", r["passed"]])
-    rows.append(["trade_id", "violations", r["total_violations"]])
-    rows.append(["trade_id", "source_boundaries", r["source_boundaries"]])
+    rows.append(["trade_id", "normal", r["normal_count"]])
+    rows.append(["trade_id", "source_known_skips", r["source_known_skips"]])
+    rows.append(["trade_id", "potential_data_loss", r["potential_data_loss"]])
+    rows.append(["trade_id", "invalid_jumps", r["invalid_jumps"]])
+    rows.append(["trade_id", "non_increasing", r["non_increasing"]])
 
     r = results["duplicates"]
     rows.append(["duplicates", "passed", r["passed"]])
@@ -740,8 +802,7 @@ def save_report(results, output_path):
     rows.append(["trade_rate", "mean_per_s", r["mean_trades_per_s"]])
     rows.append(["trade_rate", "std_per_s", r["std_trades_per_s"]])
     rows.append(["trade_rate", "buffered_spikes", r["buffered_spikes"]])
-    rows.append(["trade_rate", "rapid_bursts", r["rapid_bursts"]])
-    rows.append(["trade_rate", "market_spikes", r["market_spikes"]])
+    rows.append(["trade_rate", "market_bursts", r["market_bursts"]])
 
     r = results.get("intra_second")
     if r:
