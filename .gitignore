@@ -1,10 +1,20 @@
 # Raw trade data (too large for repo)
 data/raw/
+data/external/
+data/tmp/
+data/cache/
 
-# Computed metrics & features (regenerable)
+# Processed data (regenerable)
 data/processed/
 
-# Python cache
+# Large data formats
+*.zip
+*.parquet
+*.feather
+*.pkl
+*.pickle
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -13,9 +23,13 @@ dist/
 build/
 
 # Virtual environments
-venv/
 .venv/
+venv/
 env/
+
+# Environment variables
+.env
+.env.*
 
 # IDE
 .vscode/
@@ -28,9 +42,12 @@ env/
 .DS_Store
 Thumbs.db
 
-# Logs (generated at runtime by collector_bg.py)
-data/raw/stream_status.txt
+# Logs
 *.log
+data/raw/stream_status.txt
 
-# Jupyter checkpoints
+# Jupyter
 .ipynb_checkpoints/
+
+# Pytest
+.pytest_cache/
