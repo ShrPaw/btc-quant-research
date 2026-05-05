@@ -1,32 +1,55 @@
 # Changelog
 
-## 2026-05-05 — Repository Cleanup & Portfolio Restructure
+## 2026-05-05 — Full Repository Restructure
 
-### Added
-- `docs/audit/file_inventory.md` — full repository inventory with file counts, sizes, and classification
-- `docs/audit/file_classification.md` — every file classified (KEEP_CORE, KEEP_DOCS, KEEP_REPORT, MOVE_ARCHIVE)
-- `docs/archive/` — archived non-core variants
-- `CHANGELOG.md` — this file
+### New Structure
+Reorganized from flat scripts to professional package layout:
+- `src/ingestion/` — Data collection (fetch_historical, live_collector)
+- `src/processing/` — Cleaning and aggregation
+- `src/features/` — Feature engineering (18 microstructure features)
+- `src/validation/` — Integrity checks, baseline tests, cost model
+- `src/visualization/` — Chart generation
+- `src/utils/` — Config, I/O, logging
+- `scripts/` — Pipeline entry points
+
+### New Files
+- `requirements.txt` — Dependencies
+- `src/utils/config.py` — Centralized configuration
+- `src/utils/io.py` — CSV I/O utilities
+- `src/utils/logging_utils.py` — Pipeline logging
+- `src/processing/clean_data.py` — Data cleaning with reporting
+- `src/validation/baseline_tests.py` — Statistical baseline checks
+- `src/validation/cost_model.py` — Transaction cost estimates
+- `src/validation/validation_runner.py` — Validation orchestrator
+- `src/visualization/make_charts.py` — Portfolio chart generator
+- `scripts/run_pipeline.py` — Full pipeline entry point
+- `scripts/run_validation.py` — Validation suite entry point
+- `scripts/generate_portfolio_assets.py` — Chart generator entry point
+- `data/sample/README.md` — Sample data documentation
+- `data/processed/.gitkeep` — Placeholder for outputs
+- `reports/data_dictionary.md` — Complete column reference
+- `reports/methodology.md` — Technical methodology
+- `reports/research_summary.md` — Portfolio research summary
+- `reports/validation_report.md` — Validation documentation
+- `reports/portfolio_description.md` — Upwork/portfolio copy
+- `assets/screenshots/README.md` — Chart documentation
 
 ### Changed
-- `README.md` — rewritten as portfolio-grade documentation
-  - Fixed reference to `build_features.py` (actual file: `feature_engineering.py`)
-  - Added project positioning statement (data pipeline, not trading strategy)
-  - Added integrity validation documentation
-  - Added anti-overfitting design section
-  - Added dependency list
-  - Improved structure and formatting
-
-### Moved
-- `collector_bg.py` → `docs/archive/collector_bg.py`
-  - Reason: near-duplicate of `collector.py` (background variant, less robust)
-  - Preserved as reference; not part of clean pipeline
+- `README.md` — Complete rewrite for portfolio
+- `.gitignore` — Comprehensive exclusions
+- `CHANGELOG.md` — This file
 
 ### Removed
-Nothing deleted. All files preserved.
-
-### Notes
-- No secrets, credentials, or API keys found in repository
-- No cache, build, or temp files found in repository
-- All 3 CSV files in `data/events/` are small sample outputs (< 3 KB) — kept for demonstration
-- `.gitignore` correctly excludes `data/raw/`, `data/processed/`, `__pycache__/`, `*.pyc`
+Old flat scripts (moved to `src/` package):
+- `collector.py` → `src/ingestion/live_collector.py`
+- `fetch_historical.py` → `src/ingestion/fetch_historical.py`
+- `fetch_multi.py` → merged into `src/ingestion/fetch_historical.py`
+- `compute_cvd.py` → `src/processing/aggregate_trades.py`
+- `feature_engineering.py` → `src/features/build_features.py` + `microstructure_features.py`
+- `detect_liquidations.py` → logic preserved in feature pipeline
+- `validate_integrity.py` → `src/validation/validation_runner.py`
+- `data_audit.py` → `src/validation/baseline_tests.py`
+- `accumulate.py` → `scripts/run_pipeline.py`
+- `docs/archive/collector_bg.py` → archived variant removed
+- `docs/audit/` → old audit files removed
+- `data/events/` → sample outputs removed (regenerable)
