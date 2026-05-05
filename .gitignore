@@ -1,4 +1,36 @@
+# Raw trade data (too large for repo)
 data/raw/
+
+# Computed metrics & features (regenerable)
 data/processed/
+
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs (generated at runtime by collector_bg.py)
+data/raw/stream_status.txt
+*.log
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
