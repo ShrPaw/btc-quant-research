@@ -5,8 +5,16 @@ Portfolio Asset Generator — Create PNG charts for portfolio/resume.
 Generates clean, professional charts showing pipeline outputs.
 Uses sample data (no large raw datasets required).
 
+Charts:
+  - price_over_time.png      — cleaned price series
+  - volume_over_time.png     — buy/sell volume aggregation
+  - returns_over_time.png    — log returns over time
+  - rolling_volatility.png   — realized volatility features
+  - cvd_over_time.png        — cumulative volume delta (if available)
+  - feature_preview.png      — multi-panel feature overview
+
 Usage:
-  python scripts/generate_portfolio_assets.py
+  python3 scripts/generate_portfolio_assets.py
 """
 import os
 import sys
@@ -29,15 +37,14 @@ def main():
     except ImportError:
         log.error("matplotlib not installed")
         log.info("Install with: pip install matplotlib")
-        log.info("Then re-run: python scripts/generate_portfolio_assets.py")
+        log.info("Then re-run: python3 scripts/generate_portfolio_assets.py")
         return
 
-    # Check sample data
-    sample_path = os.path.join("data", "sample", "sample_market_data.csv")
-    if not os.path.exists(sample_path):
-        log.info("Sample data not found. Running pipeline to generate...")
-        log.info("Execute: python scripts/run_pipeline.py")
-        log.info("Then re-run this script.")
+    # Check data
+    processed = os.path.join("data", "processed", "research_dataset_sample.csv")
+    sample = os.path.join("data", "sample", "sample_market_data.csv")
+    if not os.path.exists(processed) and not os.path.exists(sample):
+        log.info("No data found. Run scripts/run_pipeline.py first.")
         return
 
     # Generate charts
@@ -51,12 +58,13 @@ def main():
         log.header("Portfolio Assets Complete")
         log.info("Charts saved to: assets/charts/")
         log.info("")
-        log.info("Recommended portfolio images:")
-        log.info("  1. price_over_time.png      — shows data processing capability")
-        log.info("  2. volume_over_time.png     — shows market microstructure understanding")
-        log.info("  3. cvd_over_time.png        — shows advanced metric computation")
-        log.info("  4. rolling_volatility.png   — shows feature engineering skills")
-        log.info("  5. feature_correlation.png  — shows analytical depth")
+        log.info("Generated charts:")
+        log.info("  1. price_over_time.png      — cleaned price series")
+        log.info("  2. volume_over_time.png     — buy/sell volume aggregation")
+        log.info("  3. returns_over_time.png    — log returns time series")
+        log.info("  4. rolling_volatility.png   — realized volatility features")
+        log.info("  5. cvd_over_time.png        — cumulative volume delta")
+        log.info("  6. feature_preview.png      — multi-panel feature overview")
         log.info("")
         log.info("Use these in:")
         log.info("  - Upwork portfolio")

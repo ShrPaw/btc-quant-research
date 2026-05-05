@@ -47,7 +47,7 @@ python scripts/run_pipeline.py data/raw/trades_hist_*.csv
 The pipeline generates:
 
 - `data/processed/metrics_1s.csv` — 1-second aggregated bars
-- `data/processed/features.csv` — Full feature matrix (18+ features)
+- `data/processed/research_dataset_sample.csv` — Full feature matrix (42+ features)
 - `data/processed/winsor_bounds.json` — Winsorization bounds for reproducibility
 
 ## Large Datasets

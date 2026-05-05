@@ -1,118 +1,107 @@
 # Validation Report
 
-## Overview
+**Generated:** 2026-05-05 20:33:03 UTC
+**Dataset:** `research_dataset_sample.csv`
+**Rows:** 300
+**Columns:** 44
+**Feature columns:** 42
 
-This report documents the validation checks implemented in the BTC quant research pipeline.
+## Columns Generated
 
-## 1. Data Integrity Checks
+- `timestamp_s`
+- `timestamp_utc`
+- `buy_vol`
+- `sell_vol`
+- `net_delta`
+- `cvd_cumulative`
+- `buy_trades`
+- `sell_trades`
+- `total_trades`
+- `price_open`
+- `price_high`
+- `price_low`
+- `price_close`
+- `vwap`
+- `total_volume`
+- `returns`
+- `abs_returns`
+- `cvd`
+- `return_5s`
+- `volume_5s`
+- `intensity_5s`
+- `cvd_delta_5s`
+- `return_15s`
+- `volume_15s`
+- `intensity_15s`
+- `cvd_delta_15s`
+- `return_30s`
+- `volume_30s`
+- `intensity_30s`
+- `cvd_delta_30s`
+- `realized_vol_30s`
+- `realized_vol_60s`
+- `realized_vol_300s`
+- `cvd_slope_10s`
+- `cvd_slope_30s`
+- `cvd_slope_60s`
+- `cvd_price_divergence_30s`
+- `trade_intensity_zscore`
+- `net_delta_mom_10s`
+- `net_delta_mom_30s`
+- `vroc_30s`
+- `efficiency_ratio_30s`
+- `vol_imbalance`
+- `price_vwap_dist`
 
-### Timestamp Ordering
-- **Check:** Timestamps must be non-decreasing
-- **Implementation:** `src/validation/validation_runner.py::check_timestamp_ordering()`
-- **Status:** Implemented
+## Missing Values
 
-### Duplicate Detection
-- **Check:** No duplicate timestamps within a dataset
-- **Implementation:** `src/validation/validation_runner.py::check_duplicates()`
-- **Status:** Implemented
+No missing values found in any column.
 
-### Trade Rate Stability
-- **Check:** Detect flatlines (consecutive seconds with ≤1 trade) and spikes
-- **Implementation:** Spike classification: market bursts vs buffered spikes (collector artifacts)
-- **Status:** Implemented
+## Duplicate Timestamps
 
-## 2. Missing Value Checks
+No duplicate timestamps found.
 
-- **Check:** All feature columns checked for NaN/null values
-- **Implementation:** `src/validation/baseline_tests.py::check_missing_values()`
-- **Output:** Count and percentage per feature
-- **Status:** Implemented
+## Timestamp Ordering
 
-## 3. Feature Sanity Checks
+Timestamps are correctly sorted in non-decreasing order.
 
-### Constant Feature Detection
-- **Check:** Features with zero variance
-- **Implementation:** `src/validation/baseline_tests.py::check_constant_features()`
-- **Status:** Implemented
+## Returns Sanity
 
-### Distribution Analysis
-- **Check:** Mean, std, skewness, kurtosis per feature
-- **Flags:** |skew| > 2, kurtosis > 10, std = 0
-- **Implementation:** `src/validation/baseline_tests.py::moment4()`
-- **Status:** Implemented
+- Non-zero returns: 299
+- Mean return: 0.0000012542
+- Min return: -0.0000258121
+- Max return: 0.0000323755
+- Sanity: PASS
 
-### Temporal Stability
-- **Check:** Mean drift across data chunks
-- **Method:** Split data into 5 chunks, compare means
-- **Flag:** Drift ratio > 2σ
-- **Implementation:** `src/validation/baseline_tests.py::check_temporal_drift()`
-- **Status:** Implemented
+## Validation Results
 
-### Feature Correlation
-- **Check:** Highly correlated feature pairs (|r| > 0.9)
-- **Implementation:** `src/validation/baseline_tests.py::check_feature_correlation()`
-- **Status:** Implemented
+- Timestamp ordering: **PASS**
+- Duplicate detection: **PASS**
+- Features analyzed: 42
+- Missing value issues: 0
+- Constant features: 1
+- Unstable features: 10
+- Redundant pairs (|r| > 0.9): 14
+- Overall: **PASSED**
 
-## 4. Lookahead Leakage Precautions
+## Anti-Leakage Precautions
 
-All precautions are structural (verified by code design, not runtime):
+All precautions verified by code structure (not runtime):
 
-| Precaution | Status | Detail |
-|------------|--------|--------|
-| Rolling windows use prior only | ✓ Implemented | `bars[start:i]` excludes current bar |
-| Expanding z-scores | ✓ Implemented | Running mean/std, not rolling |
-| Fixed winsorization bounds | ✓ Implemented | Bounds saved for train/test consistency |
-| No future returns in features | ✓ Implemented | No feature uses future price data |
+- ✓ rolling_windows_use_prior_only: All rolling features use bars[start:i] — excludes current bar
+- ✓ expanding_zscore: Trade intensity z-score uses expanding mean/std, not rolling
+- ✓ winsor_fixed_bounds: Winsorization bounds saved for train/test consistency
+- ✓ no_future_returns_in_features: No future returns used in any feature calculation
 
-## 5. Baseline Tests
+## Known Limitations
 
-Baseline tests are descriptive statistical checks, NOT signal tests:
+- Sample data is synthetic (real data requires live collection)
+- No signal generation or trading logic implemented
+- No backtesting framework
+- Cost model is reference-only (no orderbook data)
+- No real-time execution simulation
 
-- **Distribution properties** — Mean, std, skewness, kurtosis
-- **Temporal drift** — Feature stability over time
-- **Redundancy** — Correlated feature detection
-- **Missing values** — Data completeness
+## Disclaimer
 
-**Note:** These tests verify data quality and feature construction. They do NOT test for predictive power or trading profitability.
-
-## 6. Cost Model
-
-Reference cost estimates provided by `src/validation/cost_model.py`:
-
-- **Transaction fee:** 0.04% taker (Binance Futures default)
-- **Slippage estimate:** 0.01% fixed (orderbook data needed for accuracy)
-- **Cost-aware metrics:** Gross vs net return estimates
-
-**Limitation:** The cost model is a reference only. It does NOT model realistic execution, orderbook impact, position sizing, or market impact.
-
-## 7. Known Limitations
-
-1. **No orderbook data** — Slippage model uses fixed estimates
-2. **No execution simulation** — Cost model is reference-only
-3. **No signal testing** — Pipeline produces features, not signals
-4. **No backtesting** — No strategy is implemented or tested
-5. **Sample data is synthetic** — Real data requires live collection or historical fetch
-
-## 8. What Remains To Be Implemented
-
-- Signal generation logic
-- Entry/exit rules
-- Backtesting framework
-- Position sizing
-- Execution simulation with orderbook data
-- Walk-forward validation
-- Out-of-sample testing
-
-## 9. Source Files
-
-| Check | Source File |
-|-------|------------|
-| Timestamp ordering | `src/validation/validation_runner.py` |
-| Duplicate detection | `src/validation/validation_runner.py` |
-| Missing values | `src/validation/baseline_tests.py` |
-| Constant features | `src/validation/baseline_tests.py` |
-| Distribution analysis | `src/validation/baseline_tests.py` |
-| Temporal stability | `src/validation/baseline_tests.py` |
-| Feature correlation | `src/validation/baseline_tests.py` |
-| Lookahead precautions | `src/features/microstructure_features.py` |
-| Cost model | `src/validation/cost_model.py` |
+**This repository does not claim to produce a profitable trading strategy.**
+It demonstrates market data processing, feature engineering, validation workflows, and research discipline.

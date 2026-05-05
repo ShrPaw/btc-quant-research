@@ -1,20 +1,22 @@
-# Raw trade data (too large for repo)
+# ── Raw data (too large for repo) ─────────────────────────────────────────────
 data/raw/
 data/external/
 data/tmp/
 data/cache/
 
-# Processed data (regenerable)
-data/processed/
+# ── Processed data (regenerable — keep .gitkeep only) ─────────────────────────
+data/processed/*.csv
+data/processed/*.json
+data/processed/*.parquet
 
-# Large data formats
+# ── Large data formats ───────────────────────────────────────────────────────
 *.zip
 *.parquet
 *.feather
 *.pkl
 *.pickle
 
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -22,32 +24,39 @@ __pycache__/
 dist/
 build/
 
-# Virtual environments
+# ── Virtual environments ──────────────────────────────────────────────────────
 .venv/
 venv/
 env/
 
-# Environment variables
+# ── Environment variables ─────────────────────────────────────────────────────
 .env
 .env.*
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Logs
+# ── Logs & temp ───────────────────────────────────────────────────────────────
 *.log
+*.tmp
 data/raw/stream_status.txt
 
-# Jupyter
+# ── Jupyter ───────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
 
-# Pytest
+# ── Pytest ────────────────────────────────────────────────────────────────────
 .pytest_cache/
+
+# ── Keep these (explicit) ─────────────────────────────────────────────────────
+# data/sample/             — demo data, small enough for repo
+# data/processed/.gitkeep  — directory placeholder
+# assets/charts/           — portfolio charts
+# assets/screenshots/      — portfolio screenshots

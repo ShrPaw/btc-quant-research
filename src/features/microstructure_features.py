@@ -21,12 +21,13 @@ from collections import defaultdict
 
 
 def compute_returns(bars):
-    """Compute log returns between consecutive bars."""
+    """Compute log returns and absolute returns between consecutive bars."""
     for i, bar in enumerate(bars):
         if i > 0 and bars[i - 1]["price_close"] > 0 and bar["price_close"] > 0:
             bar["returns"] = round(math.log(bar["price_close"] / bars[i - 1]["price_close"]), 10)
         else:
             bar["returns"] = 0.0
+        bar["abs_returns"] = round(abs(bar["returns"]), 10)
     return bars
 
 
@@ -297,7 +298,7 @@ def build_feature_matrix(input_path):
 
     # Step 4: Winsorize
     feature_names = [
-        "returns", "cvd",
+        "returns", "abs_returns", "cvd",
         "return_5s", "return_15s", "return_30s",
         "volume_5s", "volume_15s", "volume_30s",
         "intensity_5s", "intensity_15s", "intensity_30s",

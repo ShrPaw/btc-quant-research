@@ -2,7 +2,15 @@
 Chart Generator — Portfolio-ready visualization for BTC market data.
 
 Generates clean PNG charts showing pipeline outputs.
-Uses matplotlib for static chart generation.
+Uses matplotlib only. No crazy styling. No false annotations.
+
+Charts:
+  - price_over_time.png      — cleaned price series
+  - volume_over_time.png     — buy/sell volume aggregation
+  - returns_over_time.png    — log returns over time
+  - rolling_volatility.png   — realized volatility features
+  - cvd_over_time.png        — cumulative volume delta (if available)
+  - feature_preview.png      — multi-panel feature overview
 """
 import os
 import sys
@@ -23,7 +31,9 @@ def load_sample_data():
     import csv
 
     # Try processed features first
-    features_path = os.path.join("data", "processed", "features.csv")
+    features_path = os.path.join("data", "processed", "research_dataset_sample.csv")
+    if not os.path.exists(features_path):
+        features_path = os.path.join("data", "processed", "features.csv")
     if os.path.exists(features_path):
         rows = []
         with open(features_path) as f:
@@ -45,7 +55,6 @@ def load_sample_data():
         print(f"  ⚠ No data found. Run scripts/run_pipeline.py first.")
         return None
 
-    # Load raw and aggregate
     from src.processing.aggregate_trades import aggregate_trades_to_1s
     bars = aggregate_trades_to_1s(sample_path)
     if bars:
@@ -55,8 +64,11 @@ def load_sample_data():
     return bars
 
 
+# ── Individual chart generators ──────────────────────────────────────────────
+
+
 def generate_price_chart(rows, output_path):
-    """Generate price over time chart."""
+    """Price over time — cleaned price series after processing."""
     import matplotlib.pyplot as plt
 
     timestamps = list(range(len(rows)))
@@ -76,7 +88,7 @@ def generate_price_chart(rows, output_path):
 
 
 def generate_volume_chart(rows, output_path):
-    """Generate volume over time chart."""
+    """Volume over time — buy vs sell volume aggregated from tick trades."""
     import matplotlib.pyplot as plt
 
     timestamps = list(range(len(rows)))
@@ -97,40 +109,19 @@ def generate_volume_chart(rows, output_path):
     print(f"      → {output_path}")
 
 
-def generate_delta_chart(rows, output_path):
-    """Generate net delta over time chart."""
+def generate_returns_over_time_chart(rows, output_path):
+    """Returns over time — log returns plotted as a time series."""
     import matplotlib.pyplot as plt
 
     timestamps = list(range(len(rows)))
-    delta = [r["net_delta"] for r in rows]
-    colors = ["#4CAF50" if d >= 0 else "#F44336" for d in delta]
+    returns = [r.get("returns", 0) for r in rows]
 
     fig, ax = plt.subplots(figsize=(12, 4))
-    ax.bar(timestamps, delta, color=colors, alpha=0.7, width=1.0)
-    ax.set_title("BTCUSDT Net Delta (buy_vol − sell_vol per second)", fontsize=14, fontweight="bold")
-    ax.set_xlabel("Time (seconds)")
-    ax.set_ylabel("Net Delta (BTC)")
+    ax.plot(timestamps, returns, linewidth=0.5, color="#2196F3", alpha=0.8)
     ax.axhline(y=0, color="black", linewidth=0.5)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"      → {output_path}")
-
-
-def generate_cvd_chart(rows, output_path):
-    """Generate CVD over time chart."""
-    import matplotlib.pyplot as plt
-
-    timestamps = list(range(len(rows)))
-    cvd = [r["cvd_cumulative"] for r in rows]
-
-    fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(timestamps, cvd, linewidth=1.0, color="#FF9800")
-    ax.fill_between(timestamps, cvd, alpha=0.2, color="#FF9800")
-    ax.set_title("BTCUSDT Cumulative Volume Delta (CVD)", fontsize=14, fontweight="bold")
+    ax.set_title("BTCUSDT Log Returns (1s)", fontsize=14, fontweight="bold")
     ax.set_xlabel("Time (seconds)")
-    ax.set_ylabel("CVD (BTC)")
+    ax.set_ylabel("Log Return")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -139,7 +130,7 @@ def generate_cvd_chart(rows, output_path):
 
 
 def generate_volatility_chart(rows, output_path):
-    """Generate rolling volatility chart."""
+    """Rolling volatility — realized volatility at multiple scales."""
     import matplotlib.pyplot as plt
 
     timestamps = list(range(len(rows)))
@@ -160,19 +151,19 @@ def generate_volatility_chart(rows, output_path):
     print(f"      → {output_path}")
 
 
-def generate_returns_chart(rows, output_path):
-    """Generate returns distribution chart."""
+def generate_cvd_chart(rows, output_path):
+    """CVD over time — cumulative volume delta tracking buy/sell pressure."""
     import matplotlib.pyplot as plt
 
-    returns = [r.get("returns", 0) for r in rows]
-    returns = [r for r in returns if r != 0]
+    timestamps = list(range(len(rows)))
+    cvd = [r.get("cvd_cumulative", r.get("cvd", 0)) for r in rows]
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.hist(returns, bins=80, color="#2196F3", alpha=0.7, edgecolor="white", linewidth=0.3)
-    ax.set_title("Distribution of 1s Log Returns", fontsize=14, fontweight="bold")
-    ax.set_xlabel("Log Return")
-    ax.set_ylabel("Frequency")
-    ax.axvline(x=0, color="black", linewidth=0.5)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.plot(timestamps, cvd, linewidth=1.0, color="#FF9800")
+    ax.fill_between(timestamps, cvd, alpha=0.2, color="#FF9800")
+    ax.set_title("BTCUSDT Cumulative Volume Delta (CVD)", fontsize=14, fontweight="bold")
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("CVD (BTC)")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -180,56 +171,83 @@ def generate_returns_chart(rows, output_path):
     print(f"      → {output_path}")
 
 
-def generate_feature_correlation_heatmap(rows, output_path):
-    """Generate feature correlation heatmap."""
+def generate_feature_preview_chart(rows, output_path):
+    """Feature preview — multi-panel overview of key engineered features."""
     import matplotlib.pyplot as plt
-    import math
 
-    feature_names = [
-        "returns", "net_delta", "vol_imbalance", "price_vwap_dist",
-        "trade_intensity_zscore", "realized_vol_30s", "cvd_slope_30s"
-    ]
-    feature_names = [f for f in feature_names if f in rows[0]]
+    timestamps = list(range(len(rows)))
 
-    n = len(rows)
-    columns = {fname: [r[fname] for r in rows] for fname in feature_names}
-    means = {fname: sum(columns[fname]) / n for fname in feature_names}
+    fig, axes = plt.subplots(3, 2, figsize=(14, 10))
+    fig.suptitle("Feature Preview — Engineered Features from Raw Trade Data",
+                 fontsize=15, fontweight="bold")
 
-    # Compute correlation matrix
-    nf = len(feature_names)
-    corr_matrix = [[0.0] * nf for _ in range(nf)]
-    for i, fi in enumerate(feature_names):
-        for j, fj in enumerate(feature_names):
-            xi, xj = columns[fi], columns[fj]
-            mi, mj = means[fi], means[fj]
-            cov = sum((xi[k] - mi) * (xj[k] - mj) for k in range(n)) / n
-            si = math.sqrt(sum((xi[k] - mi) ** 2 for k in range(n)) / n)
-            sj = math.sqrt(sum((xj[k] - mj) ** 2 for k in range(n)) / n)
-            if si > 1e-15 and sj > 1e-15:
-                corr_matrix[i][j] = cov / (si * sj)
+    # Panel 1: Price
+    ax = axes[0, 0]
+    prices = [r["price_close"] for r in rows]
+    ax.plot(timestamps, prices, linewidth=0.7, color="#2196F3")
+    ax.set_title("Price (1s bars)", fontsize=11)
+    ax.set_ylabel("USDT")
+    ax.grid(True, alpha=0.3)
 
-    fig, ax = plt.subplots(figsize=(8, 7))
-    im = ax.imshow(corr_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    # Panel 2: Returns
+    ax = axes[0, 1]
+    returns = [r.get("returns", 0) for r in rows]
+    ax.plot(timestamps, returns, linewidth=0.4, color="#4CAF50", alpha=0.8)
+    ax.axhline(y=0, color="black", linewidth=0.3)
+    ax.set_title("Log Returns", fontsize=11)
+    ax.set_ylabel("Return")
+    ax.grid(True, alpha=0.3)
 
-    short_names = [f.replace("_", "\n") for f in feature_names]
-    ax.set_xticks(range(nf))
-    ax.set_yticks(range(nf))
-    ax.set_xticklabels(short_names, fontsize=8, rotation=45, ha="right")
-    ax.set_yticklabels(short_names, fontsize=8)
+    # Panel 3: CVD
+    ax = axes[1, 0]
+    cvd = [r.get("cvd_cumulative", r.get("cvd", 0)) for r in rows]
+    ax.plot(timestamps, cvd, linewidth=0.8, color="#FF9800")
+    ax.fill_between(timestamps, cvd, alpha=0.15, color="#FF9800")
+    ax.set_title("Cumulative Volume Delta", fontsize=11)
+    ax.set_ylabel("CVD (BTC)")
+    ax.grid(True, alpha=0.3)
 
-    # Add text annotations
-    for i in range(nf):
-        for j in range(nf):
-            val = corr_matrix[i][j]
-            color = "white" if abs(val) > 0.6 else "black"
-            ax.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=7, color=color)
+    # Panel 4: Rolling Volatility
+    ax = axes[1, 1]
+    vol30 = [r.get("realized_vol_30s", 0) for r in rows]
+    vol60 = [r.get("realized_vol_60s", 0) for r in rows]
+    ax.plot(timestamps, vol30, linewidth=0.6, color="#9C27B0", label="30s", alpha=0.8)
+    ax.plot(timestamps, vol60, linewidth=0.6, color="#E91E63", label="60s", alpha=0.8)
+    ax.set_title("Realized Volatility", fontsize=11)
+    ax.set_ylabel("σ")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
 
-    ax.set_title("Feature Correlation Matrix", fontsize=14, fontweight="bold")
-    fig.colorbar(im, ax=ax, shrink=0.8)
-    fig.tight_layout()
+    # Panel 5: Volume Imbalance
+    ax = axes[2, 0]
+    imbalance = [r.get("vol_imbalance", 0) for r in rows]
+    colors = ["#4CAF50" if v >= 0 else "#F44336" for v in imbalance]
+    ax.bar(timestamps, imbalance, color=colors, alpha=0.6, width=1.0)
+    ax.axhline(y=0, color="black", linewidth=0.3)
+    ax.set_title("Volume Imbalance", fontsize=11)
+    ax.set_ylabel("(buy−sell)/(buy+sell)")
+    ax.set_xlabel("Time (seconds)")
+    ax.grid(True, alpha=0.3)
+
+    # Panel 6: Trade Intensity Z-Score
+    ax = axes[2, 1]
+    zscore = [r.get("trade_intensity_zscore", 0) for r in rows]
+    ax.plot(timestamps, zscore, linewidth=0.5, color="#00BCD4", alpha=0.8)
+    ax.axhline(y=0, color="black", linewidth=0.3)
+    ax.axhline(y=2, color="red", linewidth=0.3, linestyle="--", alpha=0.5)
+    ax.axhline(y=-2, color="red", linewidth=0.3, linestyle="--", alpha=0.5)
+    ax.set_title("Trade Intensity Z-Score", fontsize=11)
+    ax.set_ylabel("Z-Score")
+    ax.set_xlabel("Time (seconds)")
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"      → {output_path}")
+
+
+# ── Main entry point ────────────────────────────────────────────────────────
 
 
 def generate_all_charts(output_dir=None):
@@ -249,15 +267,24 @@ def generate_all_charts(output_dir=None):
 
     print(f"  Generating charts from {len(rows)} rows...")
 
+    # Required charts
     generate_price_chart(rows, os.path.join(output_dir, "price_over_time.png"))
     generate_volume_chart(rows, os.path.join(output_dir, "volume_over_time.png"))
-    generate_delta_chart(rows, os.path.join(output_dir, "delta_over_time.png"))
-    generate_cvd_chart(rows, os.path.join(output_dir, "cvd_over_time.png"))
+    generate_returns_over_time_chart(rows, os.path.join(output_dir, "returns_over_time.png"))
     generate_volatility_chart(rows, os.path.join(output_dir, "rolling_volatility.png"))
-    generate_returns_chart(rows, os.path.join(output_dir, "returns_distribution.png"))
-    generate_feature_correlation_heatmap(rows, os.path.join(output_dir, "feature_correlation.png"))
 
-    print(f"\n  ✓ 7 charts saved to {output_dir}/")
+    # CVD — only if data available
+    has_cvd = any(r.get("cvd_cumulative", r.get("cvd", 0)) != 0 for r in rows)
+    if has_cvd:
+        generate_cvd_chart(rows, os.path.join(output_dir, "cvd_over_time.png"))
+    else:
+        print("      ⚠ CVD data not found — skipping cvd_over_time.png")
+
+    # Feature preview
+    generate_feature_preview_chart(rows, os.path.join(output_dir, "feature_preview.png"))
+
+    count = 5 if has_cvd else 4
+    print(f"\n  ✓ {count} charts saved to {output_dir}/")
     return True
 
 

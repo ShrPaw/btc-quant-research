@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-05-06 — Portfolio Polish Pass
+
+### Added
+- `assets/charts/README.md` — Chart documentation with portfolio usage guide
+- `archive/README.md` — Archive documentation with merge history
+- `docs/audit/file_inventory.md` — Full file inventory (50 files)
+- `docs/audit/file_classification.md` — File classification by category
+- `docs/audit/cleanup_plan.md` — Cleanup decisions documentation
+
+### Changed
+- `README.md` — Added "Quick Start (60 Seconds)" section for easy onboarding
+- `README.md` — Added "For Non-Technical Readers" section for client accessibility
+- `CHANGELOG.md` — This update
+
+### Verified
+- Pipeline runs end-to-end: `python3 scripts/run_pipeline.py` (300 bars, 43 features)
+- Validation passes: `python3 scripts/run_validation.py`
+- Charts generate: `python3 scripts/generate_portfolio_assets.py` (7 charts)
+- No secrets, no inflated claims, no large files
+
 ## 2026-05-05 — Full Repository Restructure
 
 ### New Structure

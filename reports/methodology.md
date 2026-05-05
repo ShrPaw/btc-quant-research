@@ -51,12 +51,13 @@ Raw tick trades are aggregated into 1-second bars:
 
 ## Feature Engineering (`src/features/microstructure_features.py`)
 
-18 features are computed from 1-second bars. All features follow strict anti-leakage rules.
+44 columns are computed from 1-second bars (42 engineered features). All features follow strict anti-leakage rules.
 
 ### Feature Categories
 
 **Returns:**
 - Log returns at 1s, 5s, 15s, 30s scales
+- Absolute returns (magnitude of price movement)
 - Computed as: log(P_t / P_{t-W})
 
 **Volatility:**
