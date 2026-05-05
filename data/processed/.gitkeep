@@ -1,0 +1,3 @@
+# This directory holds processed data outputs.
+# Files here are gitignored except this .gitkeep.
+# Run scripts/run_pipeline.py to generate outputs.

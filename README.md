@@ -1,135 +1,181 @@
-# BTC Quant Research — Data Pipeline
+# BTC Quant Research
 
-Microstructure research engine for BTCUSDT (Binance Futures).
+**Python Market Data Pipeline & Research Validation System**
 
-## Status
+This repository demonstrates how raw crypto market data can be collected, cleaned, aggregated, transformed into features, and prepared for validation workflows.
 
-**Phase 0 — Data Foundation** ✅  
-**Phase 2 — Feature Engineering** ✅
-
-## Structure
+## What This Project Does
 
 ```
-btc-quant-research/
-├── collector.py            # Live WebSocket trade stream → CSV
-├── collector_bg.py         # Background variant (no buffer)
-├── fetch_historical.py     # REST API bootstrap (last 1000 trades)
-├── fetch_multi.py          # Extended historical collection
-├── compute_cvd.py          # Tick trades → 1s CVD/metrics aggregation
-├── detect_liquidations.py  # Liquidation cascade proxy detector
-├── build_features.py       # 1s metrics → feature matrix (Phase 2)
-├── data/
-│   ├── raw/                # Raw trade data (tick-level)
-│   │   └── trades_*.csv
-│   ├── processed/          # Computed metrics (1s aggregation)
-│   │   └── metrics_1s_*.csv
-│   ├── events/             # Detected events (liquidation proxies)
-│   │   └── liquidation_proxy_*.csv
-│   └── features/           # Feature matrices (Phase 2)
-│       ├── features_*.csv
-│       └── winsor_bounds_*.csv
-└── README.md
+Raw Binance WebSocket trades
+    → Clean (remove invalid rows)
+    → Aggregate to 1-second bars (OHLC, volume, delta, CVD, VWAP)
+    → Build 18 features (returns, volatility, CVD slopes, divergence, z-scores)
+    → Winsorize outliers (1st/99th percentile, bounds saved)
+    → Validate integrity (timestamps, duplicates, rates, stability)
+    → Output: structured, validated dataset
 ```
 
-## Quick Start
+## What Problem This Solves
+
+Raw exchange data is noisy, unstructured, and arrives at tick-level granularity. This pipeline transforms that raw data into clean, feature-rich, validation-ready datasets suitable for quantitative research.
+
+## Project Architecture
+
+```
+src/
+├── ingestion/          # Data collection
+│   ├── fetch_historical.py    # REST API bootstrap
+│   └── live_collector.py      # WebSocket real-time stream
+├── processing/         # Cleaning & aggregation
+│   ├── clean_data.py          # Data quality checks
+│   └── aggregate_trades.py    # Tick → 1s bar aggregation
+├── features/           # Feature engineering
+│   ├── build_features.py      # Entry point
+│   └── microstructure_features.py  # 18 feature calculations
+├── validation/         # Integrity & baseline tests
+│   ├── baseline_tests.py      # Statistical checks
+│   ├── cost_model.py          # Transaction cost estimates
+│   └── validation_runner.py   # Orchestrator
+├── visualization/      # Chart generation
+│   └── make_charts.py         # Portfolio-ready PNG charts
+└── utils/              # Shared utilities
+    ├── config.py              # Constants & paths
+    ├── io.py                  # CSV I/O helpers
+    └── logging_utils.py       # Pipeline logging
+
+scripts/
+├── run_pipeline.py            # Full pipeline entry point
+├── run_validation.py          # Validation suite
+└── generate_portfolio_assets.py  # Chart generator
+
+data/
+├── sample/             # Sample data for demonstration
+└── processed/          # Pipeline outputs (gitignored)
+
+reports/
+├── data_dictionary.md         # Column reference
+├── methodology.md             # Technical methodology
+├── research_summary.md        # Portfolio summary
+├── validation_report.md       # Validation documentation
+└── portfolio_description.md   # Upwork/portfolio copy
+
+assets/
+├── charts/             # Generated PNG charts
+└── screenshots/        # Portfolio screenshots
+```
+
+## Data Pipeline
+
+### Stage 1: Ingestion
+Collect raw aggregate trades from Binance Futures (BTCUSDT). Two modes:
+- **REST bootstrap** — Fetch last 1000 trades instantly (no auth)
+- **WebSocket live** — Real-time buffered collection with auto-reconnect
+
+### Stage 2: Cleaning
+Remove invalid trades: missing fields, zero quantity/price, invalid side. All removals counted and reported.
+
+### Stage 3: Aggregation
+Aggregate tick trades into 1-second bars with: OHLC prices, buy/sell volume, net delta, cumulative volume delta (CVD), VWAP, trade counts.
+
+### Stage 4: Feature Engineering
+Compute 18 microstructure features:
+- **Returns** — Log returns at 1s, 5s, 15s, 30s
+- **Volatility** — Realized vol at 30s, 60s, 300s
+- **CVD** — Slopes (OLS), deltas, price divergence
+- **Volume** — Rolling, rate of change, imbalance
+- **Intensity** — Rolling counts, expanding z-score
+- **Price** — Efficiency ratio, VWAP distance
+
+### Stage 5: Validation
+6-check integrity suite: timestamp ordering, duplicates, missing values, constant features, temporal drift, feature correlation.
+
+## Features Generated
+
+| Category | Features | Anti-Leakage |
+|----------|----------|--------------|
+| Returns | 1s, 5s, 15s, 30s log returns | Prior window only |
+| Volatility | 30s, 60s, 300s realized vol | Prior window only |
+| CVD | Slopes, deltas, divergence | Prior window only |
+| Volume | Rolling, RoC, imbalance | Prior window only |
+| Intensity | Counts, z-score | Expanding (not rolling) |
+| Price | Efficiency, VWAP dist | Instant (no lookahead) |
+
+All rolling windows use `bars[start:i]` — excludes current bar. Winsorization bounds saved for train/test consistency.
+
+## Validation Approach
+
+- **Timestamp ordering** — Non-decreasing timestamps
+- **Duplicate detection** — No duplicate timestamps
+- **Missing values** — NaN/null audit per feature
+- **Constant features** — Zero-variance detection
+- **Temporal stability** — Drift across data chunks
+- **Feature correlation** — Redundancy detection (|r| > 0.9)
+- **Lookahead precautions** — Structural verification (rolling windows, expanding stats, fixed bounds)
+
+## How to Run
 
 ```bash
-# Install dependency
-pip install websocket-client
+# Install dependencies
+pip install -r requirements.txt
 
-# Option A: Bootstrap with REST (instant, last 1000 trades)
-python3 fetch_historical.py
+# Run full pipeline (generates sample data if none exists)
+python scripts/run_pipeline.py
 
-# Option B: Live stream (run for as long as you want data)
-python3 collector.py
-# Ctrl+C to stop, auto-flushes buffer
+# Run on specific file
+python scripts/run_pipeline.py data/raw/trades_*.csv
 
-# Compute CVD & metrics
-python3 compute_cvd.py data/raw/trades_<timestamp>.csv
+# Run validation suite
+python scripts/run_validation.py
 
-# Build feature matrix
-python3 build_features.py data/processed/metrics_1s_<timestamp>.csv
-
-# Detect liquidation proxies (optional)
-python3 detect_liquidations.py data/processed/metrics_1s_<timestamp>.csv
+# Generate portfolio charts
+python scripts/generate_portfolio_assets.py
 ```
 
-## Data Schemas
+## Portfolio Screenshots
 
-### Raw Trades (`data/raw/trades_*.csv`)
+Generate charts with `python scripts/generate_portfolio_assets.py`:
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `timestamp_ms` | int | Unix epoch milliseconds |
-| `timestamp_utc` | string | Human-readable UTC |
-| `price` | float | Trade price |
-| `quantity` | float | Trade quantity (BTC) |
-| `is_buyer_maker` | bool | True = sell aggressor (taker is seller) |
-| `agggressor_side` | string | BUY or SELL (taker side) |
-| `trade_id` | int | Binance aggregate trade ID |
+- `price_over_time.png` — BTCUSDT price from raw trade data
+- `volume_over_time.png` — Buy/sell volume aggregation
+- `delta_over_time.png` — Net delta (buy − sell per second)
+- `cvd_over_time.png` — Cumulative volume delta
+- `rolling_volatility.png` — Realized volatility at multiple scales
+- `returns_distribution.png` — Log return distribution
+- `feature_correlation.png` — Feature correlation heatmap
 
-### 1s Metrics (`data/processed/metrics_1s_*.csv`)
+## Reports
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `timestamp_s` | int | Unix epoch seconds |
-| `timestamp_utc` | string | Human-readable UTC |
-| `buy_vol` | float | Aggressive buy volume (BTC) |
-| `sell_vol` | float | Aggressive sell volume (BTC) |
-| `net_delta` | float | buy_vol - sell_vol per second |
-| `cvd_cumulative` | float | Running cumulative volume delta |
-| `buy_trades` | int | Count of buy-aggressor trades |
-| `sell_trades` | int | Count of sell-aggressor trades |
-| `total_trades` | int | Total trades in second |
-| `price_open` | float | First trade price |
-| `price_high` | float | Max price in second |
-| `price_low` | float | Min price in second |
-| `price_close` | float | Last trade price |
-| `vwap` | float | Volume-weighted average price |
-| `total_volume` | float | Total volume traded |
+| Report | Description |
+|--------|-------------|
+| [Data Dictionary](reports/data_dictionary.md) | Every column explained |
+| [Methodology](reports/methodology.md) | Technical approach |
+| [Research Summary](reports/research_summary.md) | Portfolio overview |
+| [Validation Report](reports/validation_report.md) | Check implementations |
+| [Portfolio Description](reports/portfolio_description.md) | Upwork/portfolio copy |
 
-### Features (`data/features/features_*.csv`)
+## Limitations
 
-18 features computed from 1s metrics. All rolling windows use **prior data only** (no lookahead). Outliers winsorized at 1st/99th percentile.
+- No signal generation or trading logic implemented
+- No backtesting framework
+- Cost model is reference-only (no orderbook data)
+- Sample data is synthetic (real data requires live collection)
+- No real-time execution simulation
 
-| Feature | Window | Description |
-|---------|--------|-------------|
-| `ret_{1,5,30,60}s` | 1s–60s | Log returns at multiple scales |
-| `realized_vol_{30,60,300}s` | 30s–300s | Realized volatility (std of 1s returns) |
-| `cvd_slope_{10,30,60}s` | 10s–60s | CVD linear regression slope (OLS) |
-| `cvd_price_divergence_30s` | 30s | CVD direction − price direction (range: −2 to 2) |
-| `trade_intensity_zscore` | expanding | Z-score of trade count (expanding mean/std) |
-| `net_delta_mom_{10,30}s` | 10s–30s | Sum of net_delta over window |
-| `vroc_30s` | 30s | Volume rate of change (vs prior 30s) |
-| `efficiency_ratio_30s` | 30s | |net movement| / sum of |step movements| |
-| `vol_imbalance` | instant | (buy_vol − sell_vol) / (buy_vol + sell_vol) |
-| `price_vwap_dist` | instant | (price − vwap) / vwap |
+## Skills Demonstrated
 
-**Winsor bounds** (`winsor_bounds_*.csv`): Saved separately for reproducible clipping on new data during inference.
+- **Python** — Core language, stdlib-first design
+- **Data Engineering** — Pipeline design, CSV I/O, data cleaning
+- **Market Microstructure** — CVD, delta, VWAP, trade classification
+- **Feature Engineering** — Rolling/expanding stats, OLS regression, z-scores
+- **Data Validation** — Integrity checks, baseline tests, leakage prevention
+- **Automation** — End-to-end pipeline orchestration
+- **Documentation** — Data dictionary, methodology, research reports
 
-## Anti-Overfitting Protocol
+## Disclaimer
 
-- No future data in any rolling calculation
-- Winsorization at 1st/99th percentile (bounds saved for train/test consistency)
-- Expanding (not rolling) z-score statistics
-- All features are simple, interpretable, and economically motivated
+**This repository does not claim to produce a profitable trading strategy.** It demonstrates market data processing, feature engineering, validation workflows, and research discipline.
 
-## Exchange & Data Source
+## License
 
-- **Exchange**: Binance Futures (USDT-M)
-- **Symbol**: BTCUSDT
-- **Endpoint**: `wss://fstream.binance.com/ws/btcusdt@aggTrade`
-- **Auth**: None required (public data)
-- **Liquidation data**: Binance does not expose a public liquidation feed.
-  Proxy implemented via extreme CVD spikes (P5 threshold).
-
-## Data Rate
-
-Typical flow: ~2-3 trades/second during calm periods.  
-Volatile periods: 50-200+ trades/second.
-
-## Notes
-
-- No overengineering. Local-first. CSV for portability.
-- Minimum 310s of data recommended for full feature coverage.
-- Pipeline: `collector.py` → `compute_cvd.py` → `build_features.py` → [Phase 3: Signal Discovery]
+Research project by Nicolas Bustamante / ShrPaw.

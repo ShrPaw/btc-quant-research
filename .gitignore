@@ -1,4 +1,53 @@
+# Raw trade data (too large for repo)
 data/raw/
+data/external/
+data/tmp/
+data/cache/
+
+# Processed data (regenerable)
 data/processed/
+
+# Large data formats
+*.zip
+*.parquet
+*.feather
+*.pkl
+*.pickle
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+data/raw/stream_status.txt
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Pytest
+.pytest_cache/
