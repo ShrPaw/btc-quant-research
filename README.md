@@ -1,180 +1,191 @@
 # BTC Quant Research
 
-**Python Market Data Pipeline & Research Validation System**
+## Python Market Data Pipeline & Research Validation System
 
 This repository demonstrates how raw crypto market data can be collected, cleaned, aggregated, transformed into features, and prepared for validation workflows.
 
-## What This Project Does
-
-```
-Raw Binance WebSocket trades
-    → Clean (remove invalid rows)
-    → Aggregate to 1-second bars (OHLC, volume, delta, CVD, VWAP)
-    → Build 18 features (returns, volatility, CVD slopes, divergence, z-scores)
-    → Winsorize outliers (1st/99th percentile, bounds saved)
-    → Validate integrity (timestamps, duplicates, rates, stability)
-    → Output: structured, validated dataset
-```
-
 ## What Problem This Solves
 
-Raw exchange data is noisy, unstructured, and arrives at tick-level granularity. This pipeline transforms that raw data into clean, feature-rich, validation-ready datasets suitable for quantitative research.
+Raw market data is noisy, inconsistent, and hard to analyze directly. This project turns raw data into structured datasets that can be inspected, visualized, and validated.
+
+## What This Project Demonstrates
+
+- Python data engineering
+- pandas workflows
+- market data cleaning
+- feature engineering
+- delta / CVD style metrics
+- returns and volatility features
+- validation checks
+- reproducible scripts
+- portfolio-ready charts
+
+## What This Project Does Not Claim
+
+- It does not guarantee trading profitability.
+- It is not financial advice.
+- It is not a production trading strategy.
+- It is a data pipeline and validation project.
 
 ## Project Architecture
 
 ```
-src/
-├── ingestion/          # Data collection
-│   ├── fetch_historical.py    # REST API bootstrap
-│   └── live_collector.py      # WebSocket real-time stream
-├── processing/         # Cleaning & aggregation
-│   ├── clean_data.py          # Data quality checks
-│   └── aggregate_trades.py    # Tick → 1s bar aggregation
-├── features/           # Feature engineering
-│   ├── build_features.py      # Entry point
-│   └── microstructure_features.py  # 18 feature calculations
-├── validation/         # Integrity & baseline tests
-│   ├── baseline_tests.py      # Statistical checks
-│   ├── cost_model.py          # Transaction cost estimates
-│   └── validation_runner.py   # Orchestrator
-├── visualization/      # Chart generation
-│   └── make_charts.py         # Portfolio-ready PNG charts
-└── utils/              # Shared utilities
-    ├── config.py              # Constants & paths
-    ├── io.py                  # CSV I/O helpers
-    └── logging_utils.py       # Pipeline logging
-
-scripts/
-├── run_pipeline.py            # Full pipeline entry point
-├── run_validation.py          # Validation suite
-└── generate_portfolio_assets.py  # Chart generator
-
-data/
-├── sample/             # Sample data for demonstration
-└── processed/          # Pipeline outputs (gitignored)
-
-reports/
-├── data_dictionary.md         # Column reference
-├── methodology.md             # Technical methodology
-├── research_summary.md        # Portfolio summary
-├── validation_report.md       # Validation documentation
-└── portfolio_description.md   # Upwork/portfolio copy
-
-assets/
-├── charts/             # Generated PNG charts
-└── screenshots/        # Portfolio screenshots
+btc-quant-research/
+├── README.md
+├── requirements.txt
+├── .gitignore
+│
+├── src/
+│   ├── ingestion/          # Data collection
+│   │   ├── fetch_historical.py
+│   │   └── live_collector.py
+│   ├── processing/         # Cleaning & aggregation
+│   │   ├── clean_data.py
+│   │   └── aggregate_trades.py
+│   ├── features/           # Feature engineering
+│   │   ├── build_features.py
+│   │   └── microstructure_features.py
+│   ├── validation/         # Integrity & baseline tests
+│   │   ├── baseline_tests.py
+│   │   ├── cost_model.py
+│   │   └── validation_runner.py
+│   ├── visualization/      # Chart generation
+│   │   └── make_charts.py
+│   └── utils/              # Shared utilities
+│       ├── config.py
+│       ├── io.py
+│       └── logging_utils.py
+│
+├── scripts/
+│   ├── run_pipeline.py
+│   ├── run_validation.py
+│   └── generate_portfolio_assets.py
+│
+├── data/
+│   ├── sample/             # Demo data
+│   └── processed/          # Pipeline outputs (gitignored)
+│
+├── reports/
+│   ├── research_summary.md
+│   ├── methodology.md
+│   ├── validation_report.md
+│   ├── data_dictionary.md
+│   └── portfolio_description.md
+│
+├── assets/
+│   ├── charts/             # Generated PNG charts
+│   └── screenshots/        # Portfolio screenshots
+│
+├── docs/
+│   └── audit/              # Cleanup documentation
+│
+└── archive/                # Old experiments (historical reference)
 ```
 
-## Data Pipeline
+## Pipeline Overview
 
-### Stage 1: Ingestion
-Collect raw aggregate trades from Binance Futures (BTCUSDT). Two modes:
-- **REST bootstrap** — Fetch last 1000 trades instantly (no auth)
-- **WebSocket live** — Real-time buffered collection with auto-reconnect
-
-### Stage 2: Cleaning
-Remove invalid trades: missing fields, zero quantity/price, invalid side. All removals counted and reported.
-
-### Stage 3: Aggregation
-Aggregate tick trades into 1-second bars with: OHLC prices, buy/sell volume, net delta, cumulative volume delta (CVD), VWAP, trade counts.
-
-### Stage 4: Feature Engineering
-Compute 18 microstructure features:
-- **Returns** — Log returns at 1s, 5s, 15s, 30s
-- **Volatility** — Realized vol at 30s, 60s, 300s
-- **CVD** — Slopes (OLS), deltas, price divergence
-- **Volume** — Rolling, rate of change, imbalance
-- **Intensity** — Rolling counts, expanding z-score
-- **Price** — Efficiency ratio, VWAP distance
-
-### Stage 5: Validation
-6-check integrity suite: timestamp ordering, duplicates, missing values, constant features, temporal drift, feature correlation.
+1. **Load data** — Read raw trade CSV (sample data included)
+2. **Clean data** — Remove invalid rows (missing fields, zero values, bad sides)
+3. **Build features** — Aggregate to 1s bars, compute 44 columns (returns, volatility, CVD, delta, volume metrics, z-scores)
+4. **Validate dataset** — Check timestamps, duplicates, missing values, returns sanity, anti-leakage
+5. **Generate charts** — 6 clean PNG charts from processed data
+6. **Save reports** — Validation report, data dictionary, methodology
 
 ## Features Generated
 
-| Category | Features | Anti-Leakage |
-|----------|----------|--------------|
-| Returns | 1s, 5s, 15s, 30s log returns | Prior window only |
-| Volatility | 30s, 60s, 300s realized vol | Prior window only |
-| CVD | Slopes, deltas, divergence | Prior window only |
-| Volume | Rolling, RoC, imbalance | Prior window only |
-| Intensity | Counts, z-score | Expanding (not rolling) |
-| Price | Efficiency, VWAP dist | Instant (no lookahead) |
+| Category | Features |
+|----------|----------|
+| Returns | 1s log returns, absolute returns |
+| Volatility | 30s, 60s, 300s realized volatility |
+| CVD | Slopes (10s, 30s, 60s), deltas (5s, 15s, 30s), divergence |
+| Volume | Rolling (5s, 15s, 30s), rate of change, imbalance |
+| Intensity | Rolling counts (5s, 15s, 30s), expanding z-score |
+| Price | Efficiency ratio, VWAP distance |
 
-All rolling windows use `bars[start:i]` — excludes current bar. Winsorization bounds saved for train/test consistency.
-
-## Validation Approach
-
-- **Timestamp ordering** — Non-decreasing timestamps
-- **Duplicate detection** — No duplicate timestamps
-- **Missing values** — NaN/null audit per feature
-- **Constant features** — Zero-variance detection
-- **Temporal stability** — Drift across data chunks
-- **Feature correlation** — Redundancy detection (|r| > 0.9)
-- **Lookahead precautions** — Structural verification (rolling windows, expanding stats, fixed bounds)
+All rolling features use **prior data only** (zero lookahead bias). Winsorization bounds saved for train/test consistency.
 
 ## How to Run
 
 ```bash
+# Create virtual environment
+python -m venv .venv
+
+# Activate (Windows)
+.venv\Scripts\activate
+
+# Activate (Mac/Linux)
+source .venv/bin/activate
+
 # Install dependencies
 pip install -r requirements.txt
 
-# Run full pipeline (generates sample data if none exists)
+# Run full pipeline (uses included sample data)
 python scripts/run_pipeline.py
 
-# Run on specific file
-python scripts/run_pipeline.py data/raw/trades_*.csv
-
-# Run validation suite
+# Run validation
 python scripts/run_validation.py
 
 # Generate portfolio charts
 python scripts/generate_portfolio_assets.py
 ```
 
-## Portfolio Screenshots
+No API keys required. Runs out of the box with included sample data.
 
-Generate charts with `python scripts/generate_portfolio_assets.py`:
+## Outputs
 
-- `price_over_time.png` — BTCUSDT price from raw trade data
-- `volume_over_time.png` — Buy/sell volume aggregation
-- `delta_over_time.png` — Net delta (buy − sell per second)
-- `cvd_over_time.png` — Cumulative volume delta
+After running the pipeline:
+
+- `data/processed/research_dataset_sample.csv` — 300 rows × 44 columns of engineered features
+- `data/processed/metrics_1s.csv` — 1-second aggregated bars
+- `reports/validation_report.md` — Auto-generated validation results
+- `assets/charts/*.png` — 6 portfolio-ready charts
+
+## Portfolio Screenshots / Charts
+
+Generated by `python scripts/generate_portfolio_assets.py`:
+
+- `price_over_time.png` — Cleaned price series after processing
+- `volume_over_time.png` — Buy/sell volume aggregation from tick trades
+- `returns_over_time.png` — Log returns over time
 - `rolling_volatility.png` — Realized volatility at multiple scales
-- `returns_distribution.png` — Log return distribution
-- `feature_correlation.png` — Feature correlation heatmap
+- `cvd_over_time.png` — Cumulative volume delta
+- `feature_preview.png` — Multi-panel overview of key engineered features
 
 ## Reports
 
 | Report | Description |
 |--------|-------------|
-| [Data Dictionary](reports/data_dictionary.md) | Every column explained |
-| [Methodology](reports/methodology.md) | Technical approach |
 | [Research Summary](reports/research_summary.md) | Portfolio overview |
+| [Methodology](reports/methodology.md) | Technical approach |
 | [Validation Report](reports/validation_report.md) | Check implementations |
+| [Data Dictionary](reports/data_dictionary.md) | Every column explained |
 | [Portfolio Description](reports/portfolio_description.md) | Upwork/portfolio copy |
-
-## Limitations
-
-- No signal generation or trading logic implemented
-- No backtesting framework
-- Cost model is reference-only (no orderbook data)
-- Sample data is synthetic (real data requires live collection)
-- No real-time execution simulation
 
 ## Skills Demonstrated
 
-- **Python** — Core language, stdlib-first design
-- **Data Engineering** — Pipeline design, CSV I/O, data cleaning
-- **Market Microstructure** — CVD, delta, VWAP, trade classification
-- **Feature Engineering** — Rolling/expanding stats, OLS regression, z-scores
-- **Data Validation** — Integrity checks, baseline tests, leakage prevention
-- **Automation** — End-to-end pipeline orchestration
-- **Documentation** — Data dictionary, methodology, research reports
+- Python
+- Pandas
+- Data Cleaning
+- Data Processing
+- Data Engineering
+- Feature Engineering
+- Automation
+- Validation
+- Research Documentation
+
+## Limitations
+
+- Sample dataset is small (~1000 trades, 5 minutes)
+- Larger raw datasets are not committed to git
+- This repo focuses on pipeline/research structure, not profit claims
+- Results depend on data quality and market regime
+- No signal generation or trading logic implemented
+- No backtesting framework
+- Cost model is reference-only (no orderbook data)
 
 ## Disclaimer
 
-**This repository does not claim to produce a profitable trading strategy.** It demonstrates market data processing, feature engineering, validation workflows, and research discipline.
+**This repository does not claim to produce a profitable trading strategy.** It demonstrates market data processing, feature engineering, validation workflows, and research discipline. It is not financial advice.
 
 ## License
 
