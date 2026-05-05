@@ -1,16 +1,14 @@
-# Portfolio Description
+# Upwork Portfolio Entry
 
-Three versions for different contexts.
+## Title
 
-## Short Version (140 characters)
+Python Market Data Pipeline
 
-Python pipeline converting raw crypto trade data into clean research datasets with delta, CVD, volatility, and validation features.
+## Short Description
 
-## Medium Version
+Python pipeline converting raw crypto trade data into clean research datasets with delta, CVD, volatility, returns, and validation features.
 
-Python Market Data Pipeline that collects, cleans, aggregates, and structures high-volume crypto market data into validation-ready datasets.
-
-## Long Version (Upwork/Portfolio)
+## Long Description
 
 Built a Python research pipeline to collect, clean, aggregate, and structure high-volume crypto market data for analysis and validation.
 
@@ -20,7 +18,7 @@ This project demonstrates Python automation, pandas workflows, data processing, 
 
 It is presented as a data engineering and research validation project, not as a guaranteed profitable trading strategy.
 
-## Skills for Upwork
+## Skills
 
 - Python
 - Pandas
@@ -32,3 +30,12 @@ It is presented as a data engineering and research validation project, not as a 
 - Data Analysis
 - Feature Engineering
 - CSV
+
+## Suggested Screenshots
+
+1. `assets/charts/feature_preview.png` — Multi-panel feature overview
+2. `assets/charts/cvd_over_time.png` — Cumulative volume delta
+3. `assets/charts/rolling_volatility.png` — Realized volatility
+4. `assets/charts/price_over_time.png` — Cleaned price series
+5. Terminal screenshot running `python scripts/run_pipeline.py`
+6. README architecture screenshot

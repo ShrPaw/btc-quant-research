@@ -11,7 +11,7 @@ Complete reference for all columns in the BTC quant research data pipeline.
 | `price` | Trade execution price | Binance aggTrade API | USDT price |
 | `quantity` | Trade quantity in BTC | Binance aggTrade API | Always positive |
 | `is_buyer_maker` | Whether buyer was the maker | Binance aggTrade API | True = sell aggressor (taker is seller) |
-| `agggressor_side` | Taker side (BUY/SELL) | Derived from is_buyer_maker | BUY = buy aggressor, SELL = sell aggressor |
+| `agggressor_side` | Taker side (BUY/SELL) | Derived from is_buyer_maker | Column name kept for compatibility; represents aggressor side. BUY = buy aggressor, SELL = sell aggressor |
 | `trade_id` | Binance aggregate trade ID | Binance aggTrade API | Unique per trade, monotonically increasing |
 
 ## 1-Second Metrics (`data/processed/metrics_1s_*.csv`)
