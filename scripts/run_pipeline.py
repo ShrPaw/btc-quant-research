@@ -120,28 +120,23 @@ def main():
     log.set_stage(5)
     log.stage("Saving processed dataset")
 
+    # Save as research_dataset_sample.csv (portfolio output name)
     if features:
         import json
         feat_fieldnames = list(features[0].keys())
-        feat_path = os.path.join(DATA_PROCESSED, "features.csv")
+        output_name = "research_dataset_sample.csv"
+        feat_path = os.path.join(DATA_PROCESSED, output_name)
         with open(feat_path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=feat_fieldnames)
             w.writeheader()
             w.writerows(features)
-        log.info(f"Features: {feat_path}")
+        log.info(f"Output: data/processed/{output_name}")
         log.info(f"Shape: {len(features)} rows × {len(feat_fieldnames)} columns")
 
         # Save winsor bounds
         bounds_path = os.path.join(DATA_PROCESSED, "winsor_bounds.json")
         with open(bounds_path, "w") as f:
             json.dump(bounds, f, indent=2)
-        log.info(f"Winsor bounds: {bounds_path}")
-
-        # Also save as sample if running on sample data
-        if "sample" in input_path or len(sys.argv) <= 1:
-            sample_feat_path = os.path.join(DATA_SAMPLE, "sample_market_data.csv")
-            # Keep the sample as-is (raw), features are in processed/
-            pass
 
     log.result("Dataset saved")
 
@@ -150,7 +145,6 @@ def main():
     log.stage("Summary statistics")
 
     if features:
-        import math
         prices = [f["price_close"] for f in features]
         volumes = [f["total_volume"] for f in features]
         deltas = [f["net_delta"] for f in features]
@@ -160,6 +154,12 @@ def main():
         log.info(f"Mean delta:   {sum(deltas)/len(deltas):+.6f} BTC/s")
         log.info(f"Time span:    {len(features):,} seconds ({len(features)/60:.1f} min)")
 
+        # Print feature list
+        feature_names = [k for k in features[0].keys()
+                         if k not in ("timestamp_s", "timestamp_utc")]
+        log.info(f"Features generated: {', '.join(feature_names[:10])}...")
+        log.info(f"  ({len(feature_names)} total columns)")
+
     # Clean up temp file
     if os.path.exists(cleaned_path):
         os.remove(cleaned_path)
@@ -168,7 +168,7 @@ def main():
     log.header(f"Pipeline Complete ({elapsed:.1f}s)")
     print(f"  Processed: {input_path}")
     print(f"  Features:  {len(features):,} rows")
-    print(f"  Output:    {DATA_PROCESSED}/")
+    print(f"  Output:    data/processed/research_dataset_sample.csv")
 
 
 def generate_sample_data(log):

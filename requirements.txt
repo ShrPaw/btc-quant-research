@@ -1,10 +1,10 @@
 # BTC Quant Research — Dependencies
 #
-# Core pipeline uses Python stdlib only.
-# Optional dependencies for extended functionality.
+# Core pipeline uses Python stdlib only (csv, math, collections).
+# No pandas or numpy required.
 
-# Required for live data collection (WebSocket)
-websocket-client>=1.6.0
-
-# Required for chart generation
+# Chart generation
 matplotlib>=3.7.0
+
+# Live data collection (WebSocket) — optional, not needed for sample pipeline
+websocket-client>=1.6.0
